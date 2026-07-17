@@ -1,0 +1,11 @@
+[Unit]
+Description=Run KB bank synchronization daily
+
+[Timer]
+OnCalendar=*-*-* 04:10:00 Asia/Seoul
+Persistent=true
+RandomizedDelaySec=300
+Unit=kb-bank-sync.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,30 @@
+export const KB_SELECTORS = {
+  inputComponent: "#b028702",
+  accountNumber: "#account_num",
+  password: "input#비밀번호",
+  birthDateMode: "#cond_user_num",
+  birthDate: "#user_num",
+  startYear: "#조회시작년",
+  startMonth: "#조회시작월",
+  startDay: "#조회시작일",
+  endYear: "#조회끝년",
+  endMonth: "#조회끝월",
+  endDay: "#조회끝일",
+  mouseInputCheckbox: "input[id^='USEYN_CHECK_NAME_']",
+  keypadContainer: "#DIV_KEYPAD_1",
+  keypadImage: "#DIV_KEYPAD_1 img[id^='divKeypad']",
+  keypadAreas: "#DIV_KEYPAD_1 area",
+  submit: "#IBF input[type='button'][value='조회']",
+  errorRegion: "#errorDiv",
+  errorMessage: "#errMsg",
+  resultComponent: "#b028770",
+  resultComponentAlternates: ["#b028770", "#b048488"],
+  resultTables: "#b028770 table",
+  transactionTable: "#b028770 table.tType01",
+} as const;
+
+export const LOOKUP_MESSAGE_PATTERNS = {
+  empty: [/거래\s*내역이\s*없/u, /조회된\s*내역이\s*없/u, /조회\s*결과가\s*없/u, /조회하실\s*내역이\s*없/u],
+  invalidCredentials: [/비밀번호/u, /입력.*정보.*(일치|확인)/u, /계좌.*확인/u, /등록.*계좌/u],
+  maintenance: [/점검/u, /서비스.*중단/u, /이용.*시간/u],
+} as const;

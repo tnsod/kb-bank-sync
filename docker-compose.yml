@@ -1,0 +1,24 @@
+services:
+  kb-sync:
+    image: kb-bank-sync:0.1.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      TZ: Asia/Seoul
+      NODE_ENV: production
+      PLAYWRIGHT_BROWSER_MODE: ${PLAYWRIGHT_BROWSER_MODE:?PLAYWRIGHT_BROWSER_MODE must be set explicitly}
+      GOOGLE_SERVICE_ACCOUNT_KEY_PATH: /run/secrets/google-service-account.json
+      DRY_RUN: ${DRY_RUN:-true}
+      ENABLE_SHEETS_WRITE: ${ENABLE_SHEETS_WRITE:-false}
+    volumes:
+      - ./logs:/app/logs
+      - ./output:/app/output
+      - type: bind
+        source: ${GOOGLE_SERVICE_ACCOUNT_KEY_PATH:?GOOGLE_SERVICE_ACCOUNT_KEY_PATH must be set}
+        target: /run/secrets/google-service-account.json
+        read_only: true
+    shm_size: "1gb"
+    restart: "no"

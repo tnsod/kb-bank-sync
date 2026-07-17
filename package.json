@@ -1,0 +1,39 @@
+{
+  "name": "kb-bank-sync",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Read-only KB quick lookup scraper with append-only Google Sheets synchronization",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "check": "npm run lint && npm test && npm run build",
+    "sync": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "diagnose:manual": "npm run build && node dist/index.js --dry-run --headed --pause-after-submit --diagnose-submit"
+  },
+  "dependencies": {
+    "dayjs": "1.11.13",
+    "dotenv": "16.6.1",
+    "googleapis": "^154.1.0",
+    "node-html-parser": "7.0.1",
+    "pino": "9.7.0",
+    "playwright": "1.61.1",
+    "sharp": "^0.35.3",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.31.0",
+    "@types/node": "24.0.14",
+    "eslint": "9.31.0",
+    "tsx": "4.20.3",
+    "typescript": "5.8.3",
+    "typescript-eslint": "8.37.0",
+    "vitest": "^3.2.7"
+  }
+}

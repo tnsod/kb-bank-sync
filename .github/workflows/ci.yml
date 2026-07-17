@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  node-check:
+    name: Node.js 22 / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run check
+
+  linux-static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate Linux shell syntax
+        run: |
+          bash -n scripts/docker-entrypoint.sh
+          bash -n scripts/run-sync.sh
+          bash -n scripts/status.sh
+
+      - name: Validate systemd units with deployment dependencies staged
+        run: |
+          sudo install -D -m 0755 scripts/run-sync.sh /opt/kb-bank-sync/scripts/run-sync.sh
+          mkdir -p /tmp/kb-bank-sync-systemd
+          if ! systemctl cat docker.service >/dev/null 2>&1; then
+            printf '%s\n' '[Unit]' 'Description=CI Docker service stub' '[Service]' 'Type=oneshot' 'ExecStart=/bin/true' > /tmp/kb-bank-sync-systemd/docker.service
+          fi
+          SYSTEMD_UNIT_PATH="$PWD/deploy/systemd:/tmp/kb-bank-sync-systemd:/usr/lib/systemd/system:/lib/systemd/system" \
+            systemd-analyze verify kb-bank-sync.service kb-bank-sync.timer
+          systemd-analyze calendar '*-*-* 04:10:00 Asia/Seoul'
+
+  windows-static:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse PowerShell scripts without running them
+        shell: powershell
+        run: |
+          Get-ChildItem deploy\windows\*.ps1 | ForEach-Object {
+            [scriptblock]::Create((Get-Content $_.FullName -Raw)) | Out-Null
+          }
+
+  macos-static:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate zsh and LaunchAgent syntax
+        run: |
+          zsh -n deploy/macos/run-sync.sh
+          zsh -n deploy/macos/install-launch-agent.sh
+          zsh -n deploy/macos/uninstall-launch-agent.sh
+          plutil -lint deploy/macos/com.kb-bank-sync.daily.plist.template
+
+  docker-build:
+    runs-on: ubuntu-latest
+    needs: node-check
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image
+        run: docker build -t kb-bank-sync:ci .
