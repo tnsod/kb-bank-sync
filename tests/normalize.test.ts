@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { normalizeMoney, normalizeNullableText, normalizeOccurredAt, normalizeText } from "../src/transaction/normalize.js";
 import { normalizeAndValidateTransaction } from "../src/transaction/validate.js";
+import { TransactionValidationError } from "../src/bank/kb-errors.js";
 import { accountIdFromNumber, maskAccountNumber } from "../src/utils/masking.js";
 import type { RawKbTransaction } from "../src/transaction/transaction.js";
 
@@ -16,6 +17,19 @@ const validRaw: RawKbTransaction = {
   balanceText: "10,000원",
   branchText: " 테스트점 ",
 };
+
+function validationFailure(
+  raw: RawKbTransaction,
+  context = { lookupStartDate: "2026-07-01", lookupEndDate: "2026-07-31" },
+): TransactionValidationError {
+  try {
+    normalizeAndValidateTransaction(raw, "12345678901234", "2026-07-15T15:00:00+09:00", context);
+    expect.fail("Expected a transaction validation error");
+  } catch (error) {
+    expect(error).toBeInstanceOf(TransactionValidationError);
+    return error as TransactionValidationError;
+  }
+}
 
 describe("text normalization", () => {
   it("removes controls, trims, and collapses whitespace", () => {
@@ -115,5 +129,102 @@ describe("transaction validation", () => {
       "12345678901234",
       "2026-07-15T15:00:00+09:00",
     ).withdrawal).toBe(1000);
+  });
+
+  it.each([
+    {
+      name: "empty description",
+      raw: { ...validRaw, descriptionText: "" },
+      code: "EMPTY_DESCRIPTION",
+      stage: "description_validation",
+      field: "descriptionText",
+      rule: "required_non_empty",
+    },
+    {
+      name: "invalid withdrawal",
+      raw: { ...validRaw, withdrawalText: "PRIVATE_INVALID_WITHDRAWAL" },
+      code: "INVALID_WITHDRAWAL",
+      stage: "withdrawal_normalization",
+      field: "withdrawalText",
+      rule: "valid_money",
+    },
+    {
+      name: "invalid deposit",
+      raw: { ...validRaw, depositText: "PRIVATE_INVALID_DEPOSIT" },
+      code: "INVALID_DEPOSIT",
+      stage: "deposit_normalization",
+      field: "depositText",
+      rule: "valid_money",
+    },
+    {
+      name: "invalid balance",
+      raw: { ...validRaw, balanceText: "PRIVATE_INVALID_BALANCE" },
+      code: "INVALID_BALANCE",
+      stage: "balance_normalization",
+      field: "balanceText",
+      rule: "valid_optional_money",
+    },
+    {
+      name: "invalid date",
+      raw: { ...validRaw, dateText: "2026-02-30" },
+      code: "INVALID_OCCURRED_AT",
+      stage: "occurred_at_normalization",
+      field: "dateText/timeText",
+      rule: "valid_korea_datetime",
+    },
+    {
+      name: "both amounts",
+      raw: { ...validRaw, withdrawalText: "1" },
+      code: "BOTH_WITHDRAWAL_AND_DEPOSIT",
+      stage: "amount_exclusivity_validation",
+      field: "withdrawal/deposit",
+      rule: "mutually_exclusive_positive_amounts",
+    },
+    {
+      name: "neither amount",
+      raw: { ...validRaw, withdrawalText: "-", depositText: "" },
+      code: "NEITHER_WITHDRAWAL_NOR_DEPOSIT",
+      stage: "amount_exclusivity_validation",
+      field: "withdrawal/deposit",
+      rule: "one_nonzero_amount_required",
+    },
+    {
+      name: "outside lookup range",
+      raw: validRaw,
+      code: "OCCURRED_AT_OUTSIDE_LOOKUP_RANGE",
+      stage: "lookup_range_validation",
+      field: "occurredAt",
+      rule: "within_requested_lookup_range",
+      context: { lookupStartDate: "2026-07-01", lookupEndDate: "2026-07-14" },
+    },
+    {
+      name: "deposit direction",
+      raw: { ...validRaw, transactionTypeText: "출금" },
+      code: "WITHDRAWAL_DIRECTION_MISMATCH",
+      stage: "transaction_type_validation",
+      field: "transactionTypeText",
+      rule: "withdrawal_type_matches_amount_direction",
+    },
+    {
+      name: "withdrawal direction",
+      raw: { ...validRaw, transactionTypeText: "입금", withdrawalText: "1", depositText: "-" },
+      code: "DEPOSIT_DIRECTION_MISMATCH",
+      stage: "transaction_type_validation",
+      field: "transactionTypeText",
+      rule: "deposit_type_matches_amount_direction",
+    },
+  ] as const)("preserves a safe code for $name", ({ raw, code, stage, field, rule, ...testCase }) => {
+    const error = validationFailure(raw, "context" in testCase ? testCase.context : undefined);
+    expect(error).toMatchObject({ code: "TRANSACTION_VALIDATION_ERROR", stage });
+    expect(error.validationDiagnostic).toMatchObject({
+      topLevelCode: "TRANSACTION_VALIDATION_ERROR",
+      validationErrorCode: code,
+      validationStage: stage,
+      transactionIndex: null,
+      transactionCount: null,
+      failedFieldName: field,
+      failedRuleName: rule,
+    });
+    expect(JSON.stringify(error.validationDiagnostic)).not.toMatch(/PRIVATE_INVALID_/u);
   });
 });

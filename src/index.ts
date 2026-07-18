@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { createLookupHooks } from "./bank/lookup-hooks.js";
-import { KbSyncError } from "./bank/kb-errors.js";
+import { KbSyncError, TransactionValidationError } from "./bank/kb-errors.js";
 import { parseCliOptions } from "./config/cli.js";
 import { loadConfig } from "./config/env.js";
 import { createLogger } from "./logging/logger.js";
@@ -84,6 +84,8 @@ async function main(): Promise<void> {
     const status = statusForError(error);
     const safe = error instanceof SyncError
       ? { errorCode: error.code, errorType: error.name, ...error.diagnostic }
+      : error instanceof TransactionValidationError
+        ? { errorCode: error.code, errorType: error.name, ...error.validationDiagnostic }
       : error instanceof KbSyncError
         ? { errorCode: error.code, errorType: error.name }
         : { errorCode: "UNKNOWN_ERROR", errorType: error instanceof Error ? error.name : "Unknown" };

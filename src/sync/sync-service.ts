@@ -1,7 +1,7 @@
 import type { Logger } from "pino";
 
 import { runKbLookup, type KbLookupResult, type LookupHooks } from "../bank/kb-client.js";
-import type { ParserFailureDiagnostic } from "../bank/kb-errors.js";
+import { TransactionValidationError, type ParserFailureDiagnostic } from "../bank/kb-errors.js";
 import type { CliOptions } from "../config/cli.js";
 import type { AppConfig, BankLookupConfig } from "../config/env.js";
 import type { GoogleApiCallCounts, SheetLayoutResult, SheetsClient } from "../spreadsheet/google-sheets-client.js";
@@ -251,10 +251,19 @@ export async function runSync(config: AppConfig, cli: CliOptions, dependencies: 
   }
 
   const collectedAt = dependencies.collectedAt?.() ?? nowInKorea();
-  const normalized = lookup.rawTransactions.map((raw) => normalizeAndValidateTransaction(
-    raw, config.KB_ACCOUNT_NUMBER, collectedAt,
-    { lookupStartDate: range.startDate, lookupEndDate: range.endDate },
-  ));
+  const normalized = lookup.rawTransactions.map((raw, transactionIndex) => {
+    try {
+      return normalizeAndValidateTransaction(
+        raw, config.KB_ACCOUNT_NUMBER, collectedAt,
+        { lookupStartDate: range.startDate, lookupEndDate: range.endDate },
+      );
+    } catch (error) {
+      if (error instanceof TransactionValidationError) {
+        throw error.withTransactionContext(transactionIndex, lookup.rawTransactions.length);
+      }
+      throw error;
+    }
+  });
   if (normalized.length !== lookup.rawTransactions.length) {
     throw new SyncError("SHEET_DATA_INVALID", "파싱 건수와 정규화 건수가 일치하지 않습니다");
   }

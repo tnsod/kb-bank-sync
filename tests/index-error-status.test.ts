@@ -7,5 +7,7 @@ describe("entrypoint configuration error reporting", () => {
     const source = await readFile("src/index.ts", "utf8");
     expect(source).toContain('error.code === "CONFIGURATION_ERROR" ? "validation_failed"');
     expect(source).toContain("error instanceof KbSyncError");
+    expect(source).toContain("error instanceof TransactionValidationError");
+    expect(source).toContain("...error.validationDiagnostic");
   });
 });

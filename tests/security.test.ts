@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { createLogger } from "../src/logging/logger.js";
+import { TransactionValidationError } from "../src/bank/kb-errors.js";
+import { normalizeAndValidateTransaction } from "../src/transaction/validate.js";
 
 describe("sensitive logging guard", () => {
   it("redacts credentials and transaction details", () => {
@@ -42,5 +44,31 @@ describe("sensitive logging guard", () => {
       expect(html).not.toMatch(/<input[^>]+value=/iu);
       expect(html).not.toMatch(/총잔액|출금가능잔액/u);
     }
+  });
+
+  it("logs validation metadata without the original field value", () => {
+    const privateValue = "PRIVATE_INVALID_MONEY_VALUE";
+    let output = "";
+    const destination = new Writable({
+      write(chunk: Buffer | string, _encoding: BufferEncoding, callback: (error?: Error | null) => void) {
+        output += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+        callback();
+      },
+    });
+    const logger = createLogger({ LOG_LEVEL: "info" }, destination);
+    try {
+      normalizeAndValidateTransaction({
+        dateText: "2026.07.15", timeText: "14:30:00", transactionTypeText: "출금",
+        descriptionText: "가상 거래", memoText: "", withdrawalText: privateValue,
+        depositText: "-", balanceText: "100", branchText: "샘플점",
+      }, "00000000000000", "2026-07-15T15:00:00+09:00");
+      expect.fail("Expected a transaction validation error");
+    } catch (error) {
+      expect(error).toBeInstanceOf(TransactionValidationError);
+      logger.error((error as TransactionValidationError).validationDiagnostic, "Validation failed");
+    }
+    expect(output).toContain("INVALID_WITHDRAWAL");
+    expect(output).not.toContain(privateValue);
+    expect(output).not.toContain("withdrawalText\":\"PRIVATE");
   });
 });

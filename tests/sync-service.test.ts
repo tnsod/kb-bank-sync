@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { fingerprintTransaction } from "../src/transaction/fingerprint.js";
 import { normalizeAndValidateTransaction } from "../src/transaction/validate.js";
+import { TransactionValidationError } from "../src/bank/kb-errors.js";
 import { runSync } from "../src/sync/sync-service.js";
 import { transactionToSheetRow } from "../src/spreadsheet/sheet-mapper.js";
 import type { Transaction } from "../src/transaction/transaction.js";
@@ -31,6 +32,31 @@ describe("sync service", () => {
     });
     expect(summary).toMatchObject({ status: "dry_run", scrapedCount: 1, uniqueScrapedCount: 1, newTransactionCount: 1, appendCalled: false });
     expect(appendTransactions).not.toHaveBeenCalled();
+  });
+
+  it("preserves the zero-based transaction index and total count for validation failures", async () => {
+    const privateDescription = "PRIVATE_TRANSACTION_DESCRIPTION";
+    const lookup = successfulLookup([
+      rawTransaction,
+      { ...rawTransaction, dateText: "2026.07.14", descriptionText: "", memoText: privateDescription },
+      { ...rawTransaction, dateText: "2026.07.13" },
+    ]);
+    try {
+      await runSync(stage2Config, defaultCli, {
+        sheets: sheetClient(), lookup: vi.fn().mockResolvedValue(lookup), now, collectedAt: () => collectedAt,
+      });
+      expect.fail("Expected a transaction validation error");
+    } catch (error) {
+      expect(error).toBeInstanceOf(TransactionValidationError);
+      const diagnostic = (error as TransactionValidationError).validationDiagnostic;
+      expect(diagnostic).toMatchObject({
+        validationErrorCode: "EMPTY_DESCRIPTION",
+        transactionIndex: 1,
+        transactionCount: 3,
+        failedFieldName: "descriptionText",
+      });
+      expect(JSON.stringify(diagnostic)).not.toContain(privateDescription);
+    }
   });
 
   it("does not append when every scraped transaction already exists", async () => {

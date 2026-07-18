@@ -68,6 +68,50 @@ export interface ParserFailureDiagnostic extends ParserStructureDiagnostics {
   parserStage: ParserStage;
 }
 
+export type ValidationErrorCode =
+  | "EMPTY_DESCRIPTION"
+  | "INVALID_WITHDRAWAL"
+  | "INVALID_DEPOSIT"
+  | "INVALID_BALANCE"
+  | "INVALID_OCCURRED_AT"
+  | "BOTH_WITHDRAWAL_AND_DEPOSIT"
+  | "NEITHER_WITHDRAWAL_NOR_DEPOSIT"
+  | "OCCURRED_AT_OUTSIDE_LOOKUP_RANGE"
+  | "DEPOSIT_DIRECTION_MISMATCH"
+  | "WITHDRAWAL_DIRECTION_MISMATCH";
+
+export type ValidationStage =
+  | "description_validation"
+  | "withdrawal_normalization"
+  | "deposit_normalization"
+  | "balance_normalization"
+  | "occurred_at_normalization"
+  | "amount_exclusivity_validation"
+  | "lookup_range_validation"
+  | "transaction_type_validation";
+
+export type ValidationAmountState = "zero" | "nonzero" | "null" | "not_evaluated";
+
+export interface TransactionValidationDiagnostic {
+  topLevelCode: "TRANSACTION_VALIDATION_ERROR";
+  validationErrorCode: ValidationErrorCode;
+  validationStage: ValidationStage;
+  transactionIndex: number | null;
+  transactionCount: number | null;
+  failedFieldName: string;
+  failedRuleName: string;
+  rawFieldPresent: boolean;
+  rawFieldEmpty: boolean;
+  normalizedFieldPresent: boolean;
+  valueType: string;
+  stringLength: number | null;
+  numericParsingSucceeded: boolean | null;
+  dateParsingSucceeded: boolean | null;
+  withdrawalState: ValidationAmountState;
+  depositState: ValidationAmountState;
+  balancePresent: boolean;
+}
+
 export class KbSyncError extends Error {
   constructor(
     message: string,
@@ -172,7 +216,19 @@ export function parserFailureDiagnostic(error: TransactionParseError): ParserFai
 }
 
 export class TransactionValidationError extends KbSyncError {
-  constructor(message: string, options?: ErrorOptions) {
-    super(message, "TRANSACTION_VALIDATION_ERROR", "transaction_validation", options);
+  constructor(
+    message: string,
+    readonly validationDiagnostic: TransactionValidationDiagnostic,
+    options?: ErrorOptions,
+  ) {
+    super(message, "TRANSACTION_VALIDATION_ERROR", validationDiagnostic.validationStage, options);
+  }
+
+  withTransactionContext(transactionIndex: number, transactionCount: number): TransactionValidationError {
+    return new TransactionValidationError(this.message, {
+      ...this.validationDiagnostic,
+      transactionIndex,
+      transactionCount,
+    }, { cause: this });
   }
 }
