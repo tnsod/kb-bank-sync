@@ -7,6 +7,8 @@ import {
   type ParserErrorCode,
   type ParserStage,
   type ParserStructureDiagnostics,
+  type AmountCellStructureDiagnostic,
+  type TransactionRowStructureDiagnostic,
 } from "./kb-errors.js";
 import { normalizeMoney, normalizeOccurredAt, normalizeText } from "../transaction/normalize.js";
 import type { RawKbTransaction } from "../transaction/transaction.js";
@@ -41,6 +43,7 @@ export interface TransactionRowDiagnostics {
   detailRowRole: DetailRowRole | null;
   detailRowsFollowMain: boolean;
   detailColspanValidated: boolean;
+  transactionStructures?: readonly TransactionRowStructureDiagnostic[];
 }
 
 export interface ParsedRawTransactions {
@@ -219,6 +222,68 @@ function isHiddenOrTemplateRow(row: HTMLElement): boolean {
     /(?:^|\s)(?:hidden|template|sample)(?:\s|$)/iu.test(className);
 }
 
+function positiveSpan(value: string | undefined): number {
+  const parsed = Number.parseInt(value ?? "1", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+}
+
+function isHiddenCell(cell: HTMLElement): boolean {
+  const style = cell.getAttribute("style") ?? "";
+  const className = cell.getAttribute("class") ?? "";
+  return cell.getAttribute("hidden") !== undefined || cell.getAttribute("aria-hidden") === "true" ||
+    /display\s*:\s*none/iu.test(style) || /(?:^|\s)hidden(?:\s|$)/iu.test(className);
+}
+
+function amountCellStructure(
+  cells: readonly HTMLElement[],
+  cellIndex: number,
+): AmountCellStructureDiagnostic | null {
+  const cell = cells[cellIndex];
+  if (cell === undefined) return null;
+  const logicalColumnIndex = cells.slice(0, cellIndex)
+    .reduce((total, previous) => total + positiveSpan(previous.getAttribute("colspan")), 0);
+  const text = cell.text;
+  const numericTokens = normalizeText(text).match(/[+-]?\d[\d,]*(?:\.\d+)?-?/gu) ?? [];
+  return {
+    cellIndex,
+    logicalColumnIndex,
+    colspan: positiveSpan(cell.getAttribute("colspan")),
+    rowspan: positiveSpan(cell.getAttribute("rowspan")),
+    hidden: isHiddenCell(cell),
+    inputCount: cell.querySelectorAll("input").length,
+    spanCount: cell.querySelectorAll("span").length,
+    textContentLength: text.length,
+    numericTokenCount: numericTokens.length,
+    numericTokenHasSign: numericTokens.some((token) => /^[+-]/u.test(token) || token.endsWith("-")),
+  };
+}
+
+function transactionRowStructure(
+  headers: readonly (HeaderField | null)[],
+  cells: readonly HTMLElement[],
+): TransactionRowStructureDiagnostic {
+  const headerWithdrawalCellIndex = headers.indexOf("withdrawalText");
+  const headerDepositCellIndex = headers.indexOf("depositText");
+  const headerBalanceCellIndex = headers.indexOf("balanceText");
+  const withdrawalCell = amountCellStructure(cells, headerWithdrawalCellIndex);
+  const depositCell = amountCellStructure(cells, headerDepositCellIndex);
+  const balanceCell = amountCellStructure(cells, headerBalanceCellIndex);
+  const matches = (cell: AmountCellStructureDiagnostic | null, headerIndex: number): boolean =>
+    cell !== null && headerIndex >= 0 && cell.cellIndex === headerIndex && cell.logicalColumnIndex === headerIndex &&
+    cell.colspan === 1 && cell.rowspan === 1 && !cell.hidden;
+  return {
+    selectedRowCellCount: cells.length,
+    headerWithdrawalCellIndex: headerWithdrawalCellIndex < 0 ? null : headerWithdrawalCellIndex,
+    headerDepositCellIndex: headerDepositCellIndex < 0 ? null : headerDepositCellIndex,
+    headerBalanceCellIndex: headerBalanceCellIndex < 0 ? null : headerBalanceCellIndex,
+    withdrawalCell,
+    depositCell,
+    balanceCell,
+    columnMappingMatchesHeader: cells.length === headers.length && matches(withdrawalCell, headerWithdrawalCellIndex) &&
+      matches(depositCell, headerDepositCellIndex) && matches(balanceCell, headerBalanceCellIndex),
+  };
+}
+
 function appendDetailText(raw: RawKbTransaction, value: string): void {
   raw.memoText = normalizeText([raw.memoText, value].filter((part) => normalizeText(part) !== "").join(" "));
 }
@@ -319,6 +384,7 @@ function parseTable(table: HTMLElement, context: ParserTableContext): ParsedTabl
     headerMatched: true,
   });
   const transactions: RawKbTransaction[] = [];
+  const transactionStructures: TransactionRowStructureDiagnostic[] = [];
   const detailRoles: DetailRowRole[] = [];
   const detailRoleFamilies: DetailRowRoleFamily[] = [];
   let detailRowsFollowMain = true;
@@ -369,6 +435,7 @@ function parseTable(table: HTMLElement, context: ParserTableContext): ParsedTabl
         raw[field] = cell.text;
       }
     }
+    transactionStructures.push(transactionRowStructure(headers, cells));
     transactions.push(raw);
     previousMainHasDetail = false;
   }
@@ -431,6 +498,7 @@ function parseTable(table: HTMLElement, context: ParserTableContext): ParsedTabl
       detailRowRole: distinctRoles.length === 1 ? (distinctRoles[0] ?? null) : null,
       detailRowsFollowMain,
       detailColspanValidated,
+      transactionStructures,
     },
   };
 }

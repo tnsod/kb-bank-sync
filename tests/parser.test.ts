@@ -106,7 +106,7 @@ describe("KB transaction parser", () => {
   it("classifies verified one-cell rows as additional descriptions following each transaction", async () => {
     const html = await readFile(actualStructureSuccessFixture, "utf8");
     const parsed = parseRawTransactionsWithDiagnostics(html, { expectedTransactionCount: 2 });
-    expect(parsed.rowDiagnostics).toEqual({
+    expect(parsed.rowDiagnostics).toMatchObject({
       totalBodyRowCount: 4,
       mainTransactionRowCount: 2,
       detailRowCount: 2,
@@ -119,6 +119,39 @@ describe("KB transaction parser", () => {
       detailColspanValidated: true,
     });
     expect(parsed.transactions.every((transaction) => transaction.memoText.includes("테스트사용자"))).toBe(true);
+    expect(parsed.rowDiagnostics.transactionStructures).toHaveLength(2);
+    expect(parsed.rowDiagnostics.transactionStructures?.[0]).toMatchObject({
+      selectedRowCellCount: 8,
+      headerWithdrawalCellIndex: 3,
+      headerDepositCellIndex: 4,
+      headerBalanceCellIndex: 5,
+      columnMappingMatchesHeader: true,
+      withdrawalCell: { cellIndex: 3, colspan: 1, rowspan: 1, inputCount: 0, spanCount: 0 },
+      depositCell: { cellIndex: 4, colspan: 1, rowspan: 1, inputCount: 0, spanCount: 0 },
+      balanceCell: { cellIndex: 5, colspan: 1, rowspan: 1, inputCount: 0, spanCount: 0 },
+    });
+  });
+
+  it("records nested amount elements and a shifted logical column without exposing cell text", () => {
+    const privateAmount = "PRIVATE_AMOUNT_TOKEN";
+    const html = `
+      <table><thead><tr>
+        <th>거래일시</th><th>적요</th><th>내통장표시내용</th><th>출금금액</th>
+        <th>입금금액</th><th>잔액</th><th>거래점</th><th>구분</th>
+      </tr></thead><tbody><tr>
+        <td>2026-07-01 10:00:00</td><td>가상항목</td><td>샘플</td>
+        <td colspan="2"><span>1</span><input value="${privateAmount}"></td><td></td><td>10</td><td>샘플점</td><td>출금</td>
+      </tr></tbody></table>`;
+    const parsed = parseRawTransactionsWithDiagnostics(html, { expectedTransactionCount: 1 });
+    const structure = parsed.rowDiagnostics.transactionStructures?.[0];
+    expect(structure).toMatchObject({
+      selectedRowCellCount: 8,
+      columnMappingMatchesHeader: false,
+      withdrawalCell: { cellIndex: 3, logicalColumnIndex: 3, colspan: 2, inputCount: 1, spanCount: 1 },
+      depositCell: { cellIndex: 4, logicalColumnIndex: 5 },
+      balanceCell: { cellIndex: 5, logicalColumnIndex: 6 },
+    });
+    expect(JSON.stringify(structure)).not.toContain(privateAmount);
   });
 
   it("accepts three matching known detail roles", () => {

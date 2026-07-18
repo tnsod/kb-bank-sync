@@ -13,6 +13,7 @@ import { assertSheetsWriteAllowed, type SheetsWriteGuard } from "../spreadsheet/
 import { fingerprintTransaction } from "../transaction/fingerprint.js";
 import { nowInKorea } from "../transaction/normalize.js";
 import { normalizeAndValidateTransaction } from "../transaction/validate.js";
+import { buildValidationStructureContext } from "../transaction/safe-diagnostics.js";
 import { accountIdFromNumber } from "../utils/masking.js";
 import { appendWithRecovery } from "./append-recovery.js";
 import { deduplicateTransactions, selectNewTransactions } from "./deduplicate.js";
@@ -259,7 +260,11 @@ export async function runSync(config: AppConfig, cli: CliOptions, dependencies: 
       );
     } catch (error) {
       if (error instanceof TransactionValidationError) {
-        throw error.withTransactionContext(transactionIndex, lookup.rawTransactions.length);
+        throw error.withTransactionContext(
+          transactionIndex,
+          lookup.rawTransactions.length,
+          buildValidationStructureContext(transactionIndex, lookup.rawTransactions, lookup.rowDiagnostics?.transactionStructures),
+        );
       }
       throw error;
     }

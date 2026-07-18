@@ -1,6 +1,7 @@
 import {
   TransactionValidationError,
   type TransactionValidationDiagnostic,
+  type TransactionValidationStructureContext,
   type ValidationAmountState,
   type ValidationErrorCode,
   type ValidationStage,
@@ -16,7 +17,7 @@ export interface TransactionValidationContext {
 
 type ValidationDiagnosticInput = Omit<
   TransactionValidationDiagnostic,
-  "topLevelCode" | "transactionIndex" | "transactionCount"
+  "topLevelCode" | "transactionIndex" | "transactionCount" | keyof TransactionValidationStructureContext
 >;
 
 function amountState(value: number | null | undefined): ValidationAmountState {
@@ -60,6 +61,25 @@ function validationError(
     validationStage,
     transactionIndex: null,
     transactionCount: null,
+    parsedTransactionTypeCategory: "unknown",
+    rawTransactionTypePresent: false,
+    rawTransactionTypeEmpty: true,
+    rawTransactionTypeLength: 0,
+    withdrawalRawCategory: "other",
+    depositRawCategory: "other",
+    requiredDescriptionPresent: false,
+    headerWithdrawalCellIndex: null,
+    headerDepositCellIndex: null,
+    headerBalanceCellIndex: null,
+    selectedRowCellCount: null,
+    withdrawalCell: null,
+    depositCell: null,
+    balanceCell: null,
+    previousTransaction: null,
+    nextTransaction: null,
+    neighborColumnMappingConsistent: null,
+    nonMonetaryTransactionCandidate: false,
+    amountColumnMappingError: null,
     ...rawValueMetadata(rawValue),
     ...diagnostic,
   }, cause === undefined ? undefined : { cause });

@@ -92,6 +92,82 @@ export type ValidationStage =
 
 export type ValidationAmountState = "zero" | "nonzero" | "null" | "not_evaluated";
 
+export type ParsedTransactionTypeCategory =
+  | "deposit"
+  | "withdrawal"
+  | "transfer"
+  | "interest"
+  | "fee"
+  | "adjustment"
+  | "cancellation"
+  | "other"
+  | "unknown";
+
+export type RawAmountCategory =
+  | "empty"
+  | "dash"
+  | "zero"
+  | "positive_numeric"
+  | "negative_numeric"
+  | "formatted_numeric"
+  | "other";
+
+export interface AmountCellStructureDiagnostic {
+  cellIndex: number;
+  logicalColumnIndex: number;
+  colspan: number;
+  rowspan: number;
+  hidden: boolean;
+  inputCount: number;
+  spanCount: number;
+  textContentLength: number;
+  numericTokenCount: number;
+  numericTokenHasSign: boolean;
+}
+
+export interface TransactionRowStructureDiagnostic {
+  selectedRowCellCount: number;
+  headerWithdrawalCellIndex: number | null;
+  headerDepositCellIndex: number | null;
+  headerBalanceCellIndex: number | null;
+  withdrawalCell: AmountCellStructureDiagnostic | null;
+  depositCell: AmountCellStructureDiagnostic | null;
+  balanceCell: AmountCellStructureDiagnostic | null;
+  columnMappingMatchesHeader: boolean;
+}
+
+export interface NeighborTransactionAmountDiagnostic {
+  transactionIndex: number;
+  withdrawalRawCategory: RawAmountCategory;
+  depositRawCategory: RawAmountCategory;
+  withdrawalCellIndex: number | null;
+  depositCellIndex: number | null;
+  balanceCellIndex: number | null;
+  columnMappingMatchesHeader: boolean | null;
+}
+
+export interface TransactionValidationStructureContext {
+  parsedTransactionTypeCategory: ParsedTransactionTypeCategory;
+  rawTransactionTypePresent: boolean;
+  rawTransactionTypeEmpty: boolean;
+  rawTransactionTypeLength: number;
+  withdrawalRawCategory: RawAmountCategory;
+  depositRawCategory: RawAmountCategory;
+  requiredDescriptionPresent: boolean;
+  headerWithdrawalCellIndex: number | null;
+  headerDepositCellIndex: number | null;
+  headerBalanceCellIndex: number | null;
+  selectedRowCellCount: number | null;
+  withdrawalCell: AmountCellStructureDiagnostic | null;
+  depositCell: AmountCellStructureDiagnostic | null;
+  balanceCell: AmountCellStructureDiagnostic | null;
+  previousTransaction: NeighborTransactionAmountDiagnostic | null;
+  nextTransaction: NeighborTransactionAmountDiagnostic | null;
+  neighborColumnMappingConsistent: boolean | null;
+  nonMonetaryTransactionCandidate: boolean;
+  amountColumnMappingError: boolean | null;
+}
+
 export interface TransactionValidationDiagnostic {
   topLevelCode: "TRANSACTION_VALIDATION_ERROR";
   validationErrorCode: ValidationErrorCode;
@@ -110,6 +186,25 @@ export interface TransactionValidationDiagnostic {
   withdrawalState: ValidationAmountState;
   depositState: ValidationAmountState;
   balancePresent: boolean;
+  parsedTransactionTypeCategory: ParsedTransactionTypeCategory;
+  rawTransactionTypePresent: boolean;
+  rawTransactionTypeEmpty: boolean;
+  rawTransactionTypeLength: number;
+  withdrawalRawCategory: RawAmountCategory;
+  depositRawCategory: RawAmountCategory;
+  requiredDescriptionPresent: boolean;
+  headerWithdrawalCellIndex: number | null;
+  headerDepositCellIndex: number | null;
+  headerBalanceCellIndex: number | null;
+  selectedRowCellCount: number | null;
+  withdrawalCell: AmountCellStructureDiagnostic | null;
+  depositCell: AmountCellStructureDiagnostic | null;
+  balanceCell: AmountCellStructureDiagnostic | null;
+  previousTransaction: NeighborTransactionAmountDiagnostic | null;
+  nextTransaction: NeighborTransactionAmountDiagnostic | null;
+  neighborColumnMappingConsistent: boolean | null;
+  nonMonetaryTransactionCandidate: boolean;
+  amountColumnMappingError: boolean | null;
 }
 
 export class KbSyncError extends Error {
@@ -224,11 +319,16 @@ export class TransactionValidationError extends KbSyncError {
     super(message, "TRANSACTION_VALIDATION_ERROR", validationDiagnostic.validationStage, options);
   }
 
-  withTransactionContext(transactionIndex: number, transactionCount: number): TransactionValidationError {
+  withTransactionContext(
+    transactionIndex: number,
+    transactionCount: number,
+    structureContext?: TransactionValidationStructureContext,
+  ): TransactionValidationError {
     return new TransactionValidationError(this.message, {
       ...this.validationDiagnostic,
       transactionIndex,
       transactionCount,
+      ...structureContext,
     }, { cause: this });
   }
 }
