@@ -67,9 +67,16 @@ function neighborDiagnostic(
     transactionIndex,
     withdrawalRawCategory: classifyRawAmount(raw.withdrawalText),
     depositRawCategory: classifyRawAmount(raw.depositText),
+    selectedRowCellCount: structure?.selectedRowCellCount ?? null,
+    headerWithdrawalCellIndex: structure?.headerWithdrawalCellIndex ?? null,
+    headerDepositCellIndex: structure?.headerDepositCellIndex ?? null,
+    headerBalanceCellIndex: structure?.headerBalanceCellIndex ?? null,
     withdrawalCellIndex: structure?.withdrawalCell?.cellIndex ?? null,
     depositCellIndex: structure?.depositCell?.cellIndex ?? null,
     balanceCellIndex: structure?.balanceCell?.cellIndex ?? null,
+    withdrawalCell: structure?.withdrawalCell ?? null,
+    depositCell: structure?.depositCell ?? null,
+    balanceCell: structure?.balanceCell ?? null,
     columnMappingMatchesHeader: structure?.columnMappingMatchesHeader ?? null,
   };
 }

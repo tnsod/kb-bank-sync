@@ -270,7 +270,7 @@ function transactionRowStructure(
   const balanceCell = amountCellStructure(cells, headerBalanceCellIndex);
   const matches = (cell: AmountCellStructureDiagnostic | null, headerIndex: number): boolean =>
     cell !== null && headerIndex >= 0 && cell.cellIndex === headerIndex && cell.logicalColumnIndex === headerIndex &&
-    cell.colspan === 1 && cell.rowspan === 1 && !cell.hidden;
+    cell.colspan === 1 && !cell.hidden;
   return {
     selectedRowCellCount: cells.length,
     headerWithdrawalCellIndex: headerWithdrawalCellIndex < 0 ? null : headerWithdrawalCellIndex,

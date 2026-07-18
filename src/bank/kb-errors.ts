@@ -140,9 +140,16 @@ export interface NeighborTransactionAmountDiagnostic {
   transactionIndex: number;
   withdrawalRawCategory: RawAmountCategory;
   depositRawCategory: RawAmountCategory;
+  selectedRowCellCount: number | null;
+  headerWithdrawalCellIndex: number | null;
+  headerDepositCellIndex: number | null;
+  headerBalanceCellIndex: number | null;
   withdrawalCellIndex: number | null;
   depositCellIndex: number | null;
   balanceCellIndex: number | null;
+  withdrawalCell: AmountCellStructureDiagnostic | null;
+  depositCell: AmountCellStructureDiagnostic | null;
+  balanceCell: AmountCellStructureDiagnostic | null;
   columnMappingMatchesHeader: boolean | null;
 }
 

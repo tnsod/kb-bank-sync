@@ -154,6 +154,25 @@ describe("KB transaction parser", () => {
     expect(JSON.stringify(structure)).not.toContain(privateAmount);
   });
 
+  it("records rowspan without treating it as a horizontal amount-column shift", () => {
+    const html = `
+      <table><thead><tr>
+        <th>거래일시</th><th>적요</th><th>내통장표시내용</th><th>출금금액</th>
+        <th>입금금액</th><th>잔액</th><th>거래점</th><th>구분</th>
+      </tr><tr><th>의뢰인/수취인</th></tr></thead><tbody>
+      <tr><td>2026-07-01 10:00:00</td><td>가상항목</td><td>샘플</td>
+        <td rowspan="2">0</td><td rowspan="2">0</td><td rowspan="2">10</td><td>샘플점</td><td>기타</td></tr>
+      <tr><td colspan="8">샘플표시</td></tr>
+      </tbody></table>`;
+    const parsed = parseRawTransactionsWithDiagnostics(html, { expectedTransactionCount: 1 });
+    expect(parsed.rowDiagnostics.transactionStructures?.[0]).toMatchObject({
+      columnMappingMatchesHeader: true,
+      withdrawalCell: { cellIndex: 3, logicalColumnIndex: 3, colspan: 1, rowspan: 2 },
+      depositCell: { cellIndex: 4, logicalColumnIndex: 4, colspan: 1, rowspan: 2 },
+      balanceCell: { cellIndex: 5, logicalColumnIndex: 5, colspan: 1, rowspan: 2 },
+    });
+  });
+
   it("accepts three matching known detail roles", () => {
     const html = detailRoleTable([
       knownDetailRow("보낸분", "샘플표시-A"),
