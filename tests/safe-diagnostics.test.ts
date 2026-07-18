@@ -21,8 +21,10 @@ function structure(mappingMatches = true): TransactionRowStructureDiagnostic {
   });
   return {
     selectedRowCellCount: 8,
+    headerTransactionTypeCellIndex: 7,
     headerWithdrawalCellIndex: 3, headerDepositCellIndex: 4, headerBalanceCellIndex: 5,
     withdrawalCell: cell(3), depositCell: cell(4), balanceCell: cell(5),
+    transactionTypeCell: null,
     columnMappingMatchesHeader: mappingMatches,
   };
 }

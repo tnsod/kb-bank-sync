@@ -1,4 +1,5 @@
-import { parse, type HTMLElement } from "node-html-parser";
+import { createHash } from "node:crypto";
+import { NodeType, parse, type HTMLElement } from "node-html-parser";
 import type { Frame } from "playwright";
 
 import { KB_SELECTORS } from "../config/selectors.js";
@@ -9,6 +10,8 @@ import {
   type ParserStructureDiagnostics,
   type AmountCellStructureDiagnostic,
   type TransactionRowStructureDiagnostic,
+  type TransactionTypeCellDiagnostic,
+  type HashedValueCandidateDiagnostic,
 } from "./kb-errors.js";
 import { normalizeMoney, normalizeOccurredAt, normalizeText } from "../transaction/normalize.js";
 import type { RawKbTransaction } from "../transaction/transaction.js";
@@ -234,6 +237,155 @@ function isHiddenCell(cell: HTMLElement): boolean {
     /display\s*:\s*none/iu.test(style) || /(?:^|\s)hidden(?:\s|$)/iu.test(className);
 }
 
+function isAccessibilityClass(element: HTMLElement): boolean {
+  const className = element.getAttribute("class") ?? "";
+  return /(?:^|\s)(?:sr-only|screen-reader|visually-hidden|accessibility|a11y)(?:\s|$)/iu.test(className);
+}
+
+function isInvisibleElement(element: HTMLElement): boolean {
+  const style = element.getAttribute("style") ?? "";
+  return element.getAttribute("hidden") !== undefined || element.getAttribute("aria-hidden") === "true" ||
+    /display\s*:\s*none/iu.test(style) || /visibility\s*:\s*hidden/iu.test(style) || isAccessibilityClass(element);
+}
+
+function visibleText(element: HTMLElement): string {
+  if (isInvisibleElement(element)) return "";
+  return element.childNodes.map((child) => child.nodeType === NodeType.TEXT_NODE
+    ? child.text
+    : visibleText(child as HTMLElement)).join("");
+}
+
+function hashedCandidate(source: string, value: string | undefined): HashedValueCandidateDiagnostic {
+  const present = value !== undefined;
+  const actual = value ?? "";
+  const normalized = normalizeText(actual);
+  return {
+    source,
+    present,
+    length: actual.length,
+    normalizedLength: normalized.length,
+    normalizedSha256: normalized === "" ? null : createHash("sha256").update(normalized).digest("hex"),
+  };
+}
+
+function safeInputType(value: string | undefined): string {
+  const normalized = normalizeText(value ?? "text").toLowerCase();
+  const allowed = new Set([
+    "text", "hidden", "radio", "checkbox", "button", "submit", "number", "image", "password", "search", "tel", "url",
+  ]);
+  return allowed.has(normalized) ? normalized : "other";
+}
+
+function transactionTypeCellDiagnostic(
+  cells: readonly HTMLElement[],
+  physicalCellIndex: number,
+): TransactionTypeCellDiagnostic | null {
+  const cell = cells[physicalCellIndex];
+  if (cell === undefined) return null;
+  const descendants = cell.querySelectorAll("*");
+  const elements = [cell, ...descendants];
+  const directTextNodes = cell.childNodes.filter((child) => child.nodeType === NodeType.TEXT_NODE);
+  const inputs = cell.querySelectorAll("input");
+  const selects = cell.querySelectorAll("select");
+  const selectedOptions = selects.flatMap((select) => select.querySelectorAll("option").filter((option) =>
+    option.getAttribute("selected") !== undefined));
+  const textareas = cell.querySelectorAll("textarea");
+  const images = cell.querySelectorAll("img");
+  const titleValues = elements.map((element) => element.getAttribute("title")).filter((value): value is string => value !== undefined);
+  const ariaLabelValues = elements.map((element) => element.getAttribute("aria-label"))
+    .filter((value): value is string => value !== undefined);
+  const dataAttributeValues = elements.flatMap((element) => Object.entries(element.attributes)
+    .filter(([name]) => name.toLowerCase().startsWith("data-"))
+    .map(([name, value]) => ({ name: name.toLowerCase(), value })));
+  const dataAttributes = dataAttributeValues.map(({ name, value }) => ({
+      name: name.toLowerCase(), valuePresent: value !== "", valueLength: value.length,
+      normalizedSha256: normalizeText(value) === "" ? null : createHash("sha256").update(normalizeText(value)).digest("hex"),
+    }));
+  const candidates = [
+    hashedCandidate("node_text", cell.text),
+    hashedCandidate("text_content", cell.textContent),
+    hashedCandidate("inner_text", cell.innerText),
+    hashedCandidate("visible_text", visibleText(cell)),
+    hashedCandidate("direct_text", directTextNodes.map((node) => node.text).join("")),
+    ...inputs.map((input, index) => hashedCandidate(`input_value_${index}`, input.getAttribute("value"))),
+    ...selectedOptions.flatMap((option, index) => [
+      hashedCandidate(`selected_option_text_${index}`, option.text),
+      hashedCandidate(`selected_option_value_${index}`, option.getAttribute("value")),
+    ]),
+    ...textareas.map((textarea, index) => hashedCandidate(`textarea_${index}`, textarea.text)),
+    ...images.map((image, index) => hashedCandidate(`img_alt_${index}`, image.getAttribute("alt"))),
+    ...titleValues.map((value, index) => hashedCandidate(`title_${index}`, value)),
+    ...ariaLabelValues.map((value, index) => hashedCandidate(`aria_label_${index}`, value)),
+    ...dataAttributeValues.map(({ name, value }, index) => hashedCandidate(`data_attribute_${name}_${index}`, value)),
+  ];
+  const nonEmptyHashes = candidates.map((candidate) => candidate.normalizedSha256)
+    .filter((hash): hash is string => hash !== null);
+  const raw = cell.text;
+  const trimmed = raw.trim();
+  const collapsed = trimmed.replace(/\s+/gu, " ");
+  const accessibilityFiltered = normalizeText(visibleText(cell));
+  const finalNormalized = normalizeText(raw);
+  const zeroedAtStage = raw.length === 0 ? "raw_candidate"
+    : trimmed.length === 0 ? "trimmed"
+      : collapsed.length === 0 ? "whitespace_collapsed"
+        : accessibilityFiltered.length === 0 ? "accessibility_filtered"
+          : finalNormalized.length === 0 ? "final_normalized"
+            : "none";
+  const logicalCellIndex = cells.slice(0, physicalCellIndex)
+    .reduce((total, previous) => total + positiveSpan(previous.getAttribute("colspan")), 0);
+  return {
+    physicalCellIndex,
+    logicalCellIndex,
+    tagName: cell.tagName.toLowerCase(),
+    childElementCount: cell.childNodes.filter((child) => child.nodeType === NodeType.ELEMENT_NODE).length,
+    descendantElementCount: descendants.length,
+    directTextNodeCount: directTextNodes.length,
+    directTextLength: directTextNodes.reduce((total, node) => total + node.text.length, 0),
+    textContentLength: cell.textContent.length,
+    innerTextLength: cell.innerText.length,
+    normalizedTextLength: finalNormalized.length,
+    hiddenDescendantCount: descendants.filter((element) => element.getAttribute("hidden") !== undefined).length,
+    ariaHiddenDescendantCount: descendants.filter((element) => element.getAttribute("aria-hidden") === "true").length,
+    displayNoneDescendantCount: descendants.filter((element) => /display\s*:\s*none/iu.test(element.getAttribute("style") ?? "")).length,
+    visibilityHiddenDescendantCount: descendants.filter((element) =>
+      /visibility\s*:\s*hidden/iu.test(element.getAttribute("style") ?? "")).length,
+    accessibilityClassDescendantCount: descendants.filter(isAccessibilityClass).length,
+    inputCount: inputs.length,
+    inputTypes: inputs.map((input) => safeInputType(input.getAttribute("type"))),
+    inputValuePresent: inputs.some((input) => input.getAttribute("value") !== undefined),
+    inputValueLengths: inputs.map((input) => input.getAttribute("value")?.length ?? 0),
+    selectCount: selects.length,
+    selectedOptionPresent: selectedOptions.length > 0,
+    selectedOptionLengths: selectedOptions.map((option) => option.text.length),
+    textareaCount: textareas.length,
+    imgCount: images.length,
+    imgAltPresent: images.some((image) => image.getAttribute("alt") !== undefined),
+    imgAltLengths: images.map((image) => image.getAttribute("alt")?.length ?? 0),
+    titlePresent: titleValues.length > 0,
+    titleLengths: titleValues.map((value) => value.length),
+    ariaLabelPresent: ariaLabelValues.length > 0,
+    ariaLabelLengths: ariaLabelValues.map((value) => value.length),
+    dataAttributes,
+    spanCount: cell.querySelectorAll("span").length,
+    divCount: cell.querySelectorAll("div").length,
+    anchorCount: cell.querySelectorAll("a").length,
+    strongCount: cell.querySelectorAll("strong").length,
+    emphasisCount: cell.querySelectorAll("em").length,
+    candidates,
+    candidateSourcesWithValues: candidates.filter((candidate) => candidate.normalizedLength > 0)
+      .map((candidate) => candidate.source),
+    candidateValuesConflict: new Set(nonEmptyHashes).size > 1,
+    normalization: {
+      rawCandidateLength: raw.length,
+      trimmedLength: trimmed.length,
+      whitespaceCollapsedLength: collapsed.length,
+      accessibilityDuplicateRemovedLength: accessibilityFiltered.length,
+      finalNormalizedLength: finalNormalized.length,
+      zeroedAtStage,
+    },
+  };
+}
+
 function amountCellStructure(
   cells: readonly HTMLElement[],
   cellIndex: number,
@@ -265,20 +417,24 @@ function transactionRowStructure(
   const headerWithdrawalCellIndex = headers.indexOf("withdrawalText");
   const headerDepositCellIndex = headers.indexOf("depositText");
   const headerBalanceCellIndex = headers.indexOf("balanceText");
+  const headerTransactionTypeCellIndex = headers.indexOf("transactionTypeText");
   const withdrawalCell = amountCellStructure(cells, headerWithdrawalCellIndex);
   const depositCell = amountCellStructure(cells, headerDepositCellIndex);
   const balanceCell = amountCellStructure(cells, headerBalanceCellIndex);
+  const transactionTypeCell = transactionTypeCellDiagnostic(cells, headerTransactionTypeCellIndex);
   const matches = (cell: AmountCellStructureDiagnostic | null, headerIndex: number): boolean =>
     cell !== null && headerIndex >= 0 && cell.cellIndex === headerIndex && cell.logicalColumnIndex === headerIndex &&
     cell.colspan === 1 && !cell.hidden;
   return {
     selectedRowCellCount: cells.length,
+    headerTransactionTypeCellIndex: headerTransactionTypeCellIndex < 0 ? null : headerTransactionTypeCellIndex,
     headerWithdrawalCellIndex: headerWithdrawalCellIndex < 0 ? null : headerWithdrawalCellIndex,
     headerDepositCellIndex: headerDepositCellIndex < 0 ? null : headerDepositCellIndex,
     headerBalanceCellIndex: headerBalanceCellIndex < 0 ? null : headerBalanceCellIndex,
     withdrawalCell,
     depositCell,
     balanceCell,
+    transactionTypeCell,
     columnMappingMatchesHeader: cells.length === headers.length && matches(withdrawalCell, headerWithdrawalCellIndex) &&
       matches(depositCell, headerDepositCellIndex) && matches(balanceCell, headerBalanceCellIndex),
   };

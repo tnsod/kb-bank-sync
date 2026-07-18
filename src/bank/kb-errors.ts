@@ -125,14 +125,83 @@ export interface AmountCellStructureDiagnostic {
   numericTokenHasSign: boolean;
 }
 
+export interface HashedValueCandidateDiagnostic {
+  source: string;
+  present: boolean;
+  length: number;
+  normalizedLength: number;
+  normalizedSha256: string | null;
+}
+
+export interface DataAttributeDiagnostic {
+  name: string;
+  valuePresent: boolean;
+  valueLength: number;
+  normalizedSha256: string | null;
+}
+
+export interface TransactionTypeNormalizationDiagnostic {
+  rawCandidateLength: number;
+  trimmedLength: number;
+  whitespaceCollapsedLength: number;
+  accessibilityDuplicateRemovedLength: number;
+  finalNormalizedLength: number;
+  zeroedAtStage: "raw_candidate" | "trimmed" | "whitespace_collapsed" | "accessibility_filtered" | "final_normalized" | "none";
+}
+
+export interface TransactionTypeCellDiagnostic {
+  physicalCellIndex: number;
+  logicalCellIndex: number;
+  tagName: string;
+  childElementCount: number;
+  descendantElementCount: number;
+  directTextNodeCount: number;
+  directTextLength: number;
+  textContentLength: number;
+  innerTextLength: number;
+  normalizedTextLength: number;
+  hiddenDescendantCount: number;
+  ariaHiddenDescendantCount: number;
+  displayNoneDescendantCount: number;
+  visibilityHiddenDescendantCount: number;
+  accessibilityClassDescendantCount: number;
+  inputCount: number;
+  inputTypes: string[];
+  inputValuePresent: boolean;
+  inputValueLengths: number[];
+  selectCount: number;
+  selectedOptionPresent: boolean;
+  selectedOptionLengths: number[];
+  textareaCount: number;
+  imgCount: number;
+  imgAltPresent: boolean;
+  imgAltLengths: number[];
+  titlePresent: boolean;
+  titleLengths: number[];
+  ariaLabelPresent: boolean;
+  ariaLabelLengths: number[];
+  dataAttributes: DataAttributeDiagnostic[];
+  spanCount: number;
+  divCount: number;
+  anchorCount: number;
+  strongCount: number;
+  emphasisCount: number;
+  candidates: HashedValueCandidateDiagnostic[];
+  candidateSourcesWithValues: string[];
+  candidateValuesConflict: boolean;
+  normalization: TransactionTypeNormalizationDiagnostic;
+}
+
 export interface TransactionRowStructureDiagnostic {
   selectedRowCellCount: number;
+  headerTransactionTypeCellIndex: number | null;
   headerWithdrawalCellIndex: number | null;
   headerDepositCellIndex: number | null;
   headerBalanceCellIndex: number | null;
   withdrawalCell: AmountCellStructureDiagnostic | null;
   depositCell: AmountCellStructureDiagnostic | null;
   balanceCell: AmountCellStructureDiagnostic | null;
+  transactionTypeCell: TransactionTypeCellDiagnostic | null;
   columnMappingMatchesHeader: boolean;
 }
 
@@ -173,6 +242,7 @@ export interface TransactionValidationStructureContext {
   neighborColumnMappingConsistent: boolean | null;
   nonMonetaryTransactionCandidate: boolean;
   amountColumnMappingError: boolean | null;
+  transactionTypeCell: TransactionTypeCellDiagnostic | null;
 }
 
 export interface TransactionValidationDiagnostic {
@@ -212,6 +282,7 @@ export interface TransactionValidationDiagnostic {
   neighborColumnMappingConsistent: boolean | null;
   nonMonetaryTransactionCandidate: boolean;
   amountColumnMappingError: boolean | null;
+  transactionTypeCell: TransactionTypeCellDiagnostic | null;
 }
 
 export class KbSyncError extends Error {

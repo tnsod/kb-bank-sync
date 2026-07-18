@@ -132,5 +132,6 @@ export function buildValidationStructureContext(
     amountColumnMappingError: structure === undefined || neighborColumnMappingConsistent === null
       ? null
       : !mappingMatches,
+    transactionTypeCell: structure?.transactionTypeCell ?? null,
   };
 }

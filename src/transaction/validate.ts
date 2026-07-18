@@ -80,6 +80,7 @@ function validationError(
     neighborColumnMappingConsistent: null,
     nonMonetaryTransactionCandidate: false,
     amountColumnMappingError: null,
+    transactionTypeCell: null,
     ...rawValueMetadata(rawValue),
     ...diagnostic,
   }, cause === undefined ? undefined : { cause });
