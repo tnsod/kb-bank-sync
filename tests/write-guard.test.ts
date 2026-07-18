@@ -5,13 +5,25 @@ import { assertSheetsWriteAllowed, type SheetsWriteGuard } from "../src/spreadsh
 const valid: SheetsWriteGuard = {
   dryRun: false, sheetsWriteEnabled: true, lookupStatus: "success", resultContainerDetected: true,
   transactionTableDetected: true, pageStructureValidated: true, allTransactionsValidated: true,
-  parsedTransactionCount: 1, normalizedTransactionCount: 1, newTransactionCount: 1,
+  parsedTransactionCount: 1, skippedInformationalRowCount: 0, normalizedTransactionCount: 1, newTransactionCount: 1,
   sheetHeadersValidated: true, missingSourceKeyRowCount: 0,
 };
 
 describe("Sheets write guard", () => {
   it("accepts only the complete safe state", () => {
     expect(() => assertSheetsWriteAllowed(valid)).not.toThrow();
+  });
+
+  it("accepts a structurally validated informational row excluded before append", () => {
+    expect(() => assertSheetsWriteAllowed({
+      ...valid, parsedTransactionCount: 2, skippedInformationalRowCount: 1, normalizedTransactionCount: 1,
+    })).not.toThrow();
+  });
+
+  it("rejects a parsed and normalized count gap that is not explained by informational rows", () => {
+    expect(() => assertSheetsWriteAllowed({
+      ...valid, parsedTransactionCount: 2, skippedInformationalRowCount: 0, normalizedTransactionCount: 1,
+    })).toThrow();
   });
 
   it.each([

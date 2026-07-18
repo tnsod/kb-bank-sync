@@ -1,4 +1,5 @@
 import type { KbLookupResult } from "../src/bank/kb-client.js";
+import type { AmountCellStructureDiagnostic, TransactionRowStructureDiagnostic } from "../src/bank/kb-errors.js";
 import type { CliOptions } from "../src/config/cli.js";
 import type { AppConfig } from "../src/config/env.js";
 import type { SheetsClient } from "../src/spreadsheet/google-sheets-client.js";
@@ -28,6 +29,28 @@ export const rawTransaction = {
   depositText: "1,000", balanceText: "10,000", branchText: "테스트점",
 };
 
+function amountCell(cellIndex: number): AmountCellStructureDiagnostic {
+  return {
+    cellIndex, logicalColumnIndex: cellIndex, colspan: 1, rowspan: 1, hidden: false,
+    inputCount: 0, spanCount: 0, textContentLength: 1, numericTokenCount: 1, numericTokenHasSign: false,
+  };
+}
+
+function transactionStructure(): TransactionRowStructureDiagnostic {
+  return {
+    selectedRowCellCount: 8,
+    headerTransactionTypeCellIndex: 7,
+    headerWithdrawalCellIndex: 3,
+    headerDepositCellIndex: 4,
+    headerBalanceCellIndex: 5,
+    withdrawalCell: amountCell(3),
+    depositCell: amountCell(4),
+    balanceCell: amountCell(5),
+    transactionTypeCell: null,
+    columnMappingMatchesHeader: true,
+  };
+}
+
 export function successfulLookup(rawTransactions = [rawTransaction]): KbLookupResult {
   return {
     status: rawTransactions.length === 0 ? "empty" : "success",
@@ -40,6 +63,7 @@ export function successfulLookup(rawTransactions = [rawTransaction]): KbLookupRe
       detailRowCount: rawTransactions.length, matchedDetailRowCount: rawTransactions.length,
       unmatchedDetailRowCount: 0, orphanDetailRowCount: 0, detailRowsMatchedToTransactions: true,
       detailRowRole: "additional_description", detailRowsFollowMain: true, detailColspanValidated: true,
+      transactionStructures: rawTransactions.map(() => transactionStructure()),
     },
   };
 }

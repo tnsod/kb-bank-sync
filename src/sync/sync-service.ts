@@ -12,7 +12,8 @@ import { initializeSheet, type SheetInitializationResult } from "../spreadsheet/
 import { assertSheetsWriteAllowed, type SheetsWriteGuard } from "../spreadsheet/write-guard.js";
 import { fingerprintTransaction } from "../transaction/fingerprint.js";
 import { nowInKorea } from "../transaction/normalize.js";
-import { normalizeAndValidateTransaction } from "../transaction/validate.js";
+import { normalizeAndClassifyTransaction } from "../transaction/validate.js";
+import type { TransactionWithoutSourceKey } from "../transaction/transaction.js";
 import { buildValidationStructureContext } from "../transaction/safe-diagnostics.js";
 import { accountIdFromNumber } from "../utils/masking.js";
 import { appendWithRecovery } from "./append-recovery.js";
@@ -48,6 +49,8 @@ export interface SyncSummary {
   lookupEndDate: string | null;
   minimumAllowedDate: string | null;
   existingRowCount: number;
+  parsedRowCount: number;
+  skippedInformationalRowCount: number;
   scrapedCount: number;
   fingerprintedCount: number;
   uniqueScrapedCount: number;
@@ -90,7 +93,8 @@ export interface SyncDependencies {
 function emptySummary(status: SyncRunStatus, writeEnabled: boolean, startedAt: number): SyncSummary {
   return {
     status, lookupStartDate: null, lookupEndDate: null, minimumAllowedDate: null,
-    existingRowCount: 0, scrapedCount: 0, fingerprintedCount: 0, uniqueScrapedCount: 0,
+    existingRowCount: 0, parsedRowCount: 0, skippedInformationalRowCount: 0,
+    scrapedCount: 0, fingerprintedCount: 0, uniqueScrapedCount: 0,
     internalDuplicateCount: 0, existingTransactionCount: 0, newTransactionCount: 0,
     insertedCount: 0, appendCalled: false, sheetsWriteEnabled: writeEnabled,
     durationMs: Date.now() - startedAt, retryCount: 0, duplicateSourceKeyCount: 0,
@@ -114,6 +118,24 @@ function mapLookupFailure(status: KbLookupResult["status"]): SyncRunStatus {
   }
   if (status === "timeout") return "network_failed";
   return "unknown_failed";
+}
+
+function hasValidatedInformationalRowStructure(lookup: KbLookupResult, transactionIndex: number): boolean {
+  const diagnostics = lookup.rowDiagnostics;
+  const structure = diagnostics?.transactionStructures?.[transactionIndex];
+  const parsedRowCount = lookup.rawTransactions.length;
+  return diagnostics !== null && structure !== undefined &&
+    lookup.screenTransactionCount === parsedRowCount &&
+    diagnostics.totalBodyRowCount === parsedRowCount * 2 &&
+    diagnostics.mainTransactionRowCount === parsedRowCount &&
+    diagnostics.detailRowCount === parsedRowCount &&
+    diagnostics.matchedDetailRowCount === parsedRowCount &&
+    diagnostics.unmatchedDetailRowCount === 0 && diagnostics.orphanDetailRowCount === 0 &&
+    diagnostics.detailRowsMatchedToTransactions && diagnostics.detailRowsFollowMain && diagnostics.detailColspanValidated &&
+    diagnostics.transactionStructures?.length === parsedRowCount &&
+    structure.selectedRowCellCount === 8 && structure.columnMappingMatchesHeader &&
+    structure.headerTransactionTypeCellIndex !== null && structure.headerTransactionTypeCellIndex >= 0 &&
+    structure.headerTransactionTypeCellIndex < structure.selectedRowCellCount;
 }
 
 async function runInitialization(
@@ -252,12 +274,29 @@ export async function runSync(config: AppConfig, cli: CliOptions, dependencies: 
   }
 
   const collectedAt = dependencies.collectedAt?.() ?? nowInKorea();
-  const normalized = lookup.rawTransactions.map((raw, transactionIndex) => {
+  const normalized: TransactionWithoutSourceKey[] = [];
+  let skippedInformationalRowCount = 0;
+  for (let transactionIndex = 0; transactionIndex < lookup.rawTransactions.length; transactionIndex += 1) {
+    const raw = lookup.rawTransactions[transactionIndex];
+    if (raw === undefined) continue;
     try {
-      return normalizeAndValidateTransaction(
+      const result = normalizeAndClassifyTransaction(
         raw, config.KB_ACCOUNT_NUMBER, collectedAt,
-        { lookupStartDate: range.startDate, lookupEndDate: range.endDate },
+        {
+          validationContext: { lookupStartDate: range.startDate, lookupEndDate: range.endDate },
+          informationalRowStructureValidated: hasValidatedInformationalRowStructure(lookup, transactionIndex),
+        },
       );
+      if (result.kind === "informational_row") {
+        skippedInformationalRowCount += 1;
+        dependencies.logger?.info({
+          event: "informational_row_skipped",
+          transactionIndex,
+          reason: result.reason,
+        }, "Informational row skipped");
+      } else {
+        normalized.push(result.transaction);
+      }
     } catch (error) {
       if (error instanceof TransactionValidationError) {
         throw error.withTransactionContext(
@@ -268,8 +307,8 @@ export async function runSync(config: AppConfig, cli: CliOptions, dependencies: 
       }
       throw error;
     }
-  });
-  if (normalized.length !== lookup.rawTransactions.length) {
+  }
+  if (normalized.length + skippedInformationalRowCount !== lookup.rawTransactions.length) {
     throw new SyncError("SHEET_DATA_INVALID", "파싱 건수와 정규화 건수가 일치하지 않습니다");
   }
   const fingerprinted = normalized.map(fingerprintTransaction);
@@ -278,7 +317,8 @@ export async function runSync(config: AppConfig, cli: CliOptions, dependencies: 
   const base: SyncSummary = {
     status: dryRun ? "dry_run" : "success",
     lookupStartDate: range.startDate, lookupEndDate: range.endDate, minimumAllowedDate: range.minimumAllowedDate,
-    existingRowCount: state.rowCount, scrapedCount: lookup.rawTransactions.length,
+    existingRowCount: state.rowCount, parsedRowCount: lookup.rawTransactions.length,
+    skippedInformationalRowCount, scrapedCount: normalized.length,
     fingerprintedCount: fingerprinted.length, uniqueScrapedCount: deduplicated.transactions.length,
     internalDuplicateCount: deduplicated.internalDuplicateCount,
     existingTransactionCount: fresh.existingTransactionCount, newTransactionCount: fresh.transactions.length,
@@ -287,6 +327,9 @@ export async function runSync(config: AppConfig, cli: CliOptions, dependencies: 
     invalidDateRowCount: state.invalidDateRowCount, missingSourceKeyRowCount: state.missingSourceKeyRowCount,
     googleApiCalls: callCounts(dependencies.sheets),
   };
+  if (normalized.length === 0) {
+    return { ...base, status: "no_new_transactions", googleApiCalls: callCounts(dependencies.sheets), durationMs: Date.now() - startedAt };
+  }
   if (dryRun) return { ...base, googleApiCalls: callCounts(dependencies.sheets), durationMs: Date.now() - startedAt };
   if (fresh.transactions.length === 0) {
     return { ...base, status: "no_new_transactions", googleApiCalls: callCounts(dependencies.sheets), durationMs: Date.now() - startedAt };
@@ -301,6 +344,7 @@ export async function runSync(config: AppConfig, cli: CliOptions, dependencies: 
     pageStructureValidated: lookup.status === "success" && lookup.paginationDetected === false && transactionTableDetected,
     allTransactionsValidated: true,
     parsedTransactionCount: lookup.rawTransactions.length,
+    skippedInformationalRowCount,
     normalizedTransactionCount: normalized.length,
     newTransactionCount: fresh.transactions.length,
     sheetHeadersValidated: true,

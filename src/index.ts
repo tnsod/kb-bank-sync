@@ -70,6 +70,7 @@ async function main(): Promise<void> {
     process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
     logger.info({
       event: "sync_finished", runId, status: summary.status, existingRowCount: summary.existingRowCount,
+      parsedRowCount: summary.parsedRowCount, skippedInformationalRowCount: summary.skippedInformationalRowCount,
       scrapedCount: summary.scrapedCount, uniqueScrapedCount: summary.uniqueScrapedCount,
       newTransactionCount: summary.newTransactionCount, insertedCount: summary.insertedCount,
       appendCalled: summary.appendCalled, durationMs: summary.durationMs,

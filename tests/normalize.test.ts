@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { normalizeMoney, normalizeNullableText, normalizeOccurredAt, normalizeText } from "../src/transaction/normalize.js";
-import { normalizeAndValidateTransaction } from "../src/transaction/validate.js";
+import {
+  INFORMATIONAL_ROW_REASON,
+  normalizeAndClassifyTransaction,
+  normalizeAndValidateTransaction,
+} from "../src/transaction/validate.js";
 import { TransactionValidationError } from "../src/bank/kb-errors.js";
 import { accountIdFromNumber, maskAccountNumber } from "../src/utils/masking.js";
 import type { RawKbTransaction } from "../src/transaction/transaction.js";
@@ -80,6 +84,11 @@ describe("masking", () => {
 });
 
 describe("transaction validation", () => {
+  const classificationOptions = {
+    informationalRowStructureValidated: true,
+    validationContext: { lookupStartDate: "2026-07-01", lookupEndDate: "2026-07-31" },
+  };
+
   it("normalizes a valid transaction", () => {
     const transaction = normalizeAndValidateTransaction(validRaw, "12345678901234", "2026-07-15T15:00:00+09:00");
     expect(transaction).toMatchObject({
@@ -107,6 +116,63 @@ describe("transaction validation", () => {
       "12345678901234",
       "2026-07-15T15:00:00+09:00",
     )).toThrow(/모두 0/u);
+  });
+
+  it("classifies a structurally valid zero-amount row with a blank transaction type as informational", () => {
+    const result = normalizeAndClassifyTransaction(
+      { ...validRaw, transactionTypeText: "   ", withdrawalText: "0", depositText: "-" },
+      "12345678901234",
+      "2026-07-15T15:00:00+09:00",
+      classificationOptions,
+    );
+    expect(result).toEqual({ kind: "informational_row", reason: INFORMATIONAL_ROW_REASON });
+  });
+
+  it("keeps rejecting a zero-amount row whose transaction type is present", () => {
+    expect(() => normalizeAndClassifyTransaction(
+      { ...validRaw, transactionTypeText: "안내", withdrawalText: "0", depositText: "0" },
+      "12345678901234",
+      "2026-07-15T15:00:00+09:00",
+      classificationOptions,
+    )).toThrow(/모두 0/u);
+  });
+
+  it("does not classify malformed amounts as informational", () => {
+    try {
+      normalizeAndClassifyTransaction(
+        { ...validRaw, transactionTypeText: " ", withdrawalText: "not-a-number", depositText: "0" },
+        "12345678901234",
+        "2026-07-15T15:00:00+09:00",
+        classificationOptions,
+      );
+      expect.fail("Expected invalid withdrawal validation");
+    } catch (error) {
+      expect(error).toBeInstanceOf(TransactionValidationError);
+      expect((error as TransactionValidationError).validationDiagnostic.validationErrorCode).toBe("INVALID_WITHDRAWAL");
+    }
+  });
+
+  it("does not classify invalid dates or balances as informational", () => {
+    for (const raw of [
+      { ...validRaw, transactionTypeText: " ", withdrawalText: "0", depositText: "0", dateText: "2026-02-30" },
+      { ...validRaw, transactionTypeText: " ", withdrawalText: "0", depositText: "0", balanceText: "invalid" },
+    ]) {
+      expect(() => normalizeAndClassifyTransaction(
+        raw, "12345678901234", "2026-07-15T15:00:00+09:00", classificationOptions,
+      )).toThrow(TransactionValidationError);
+    }
+  });
+
+  it("does not exclude normal deposits or withdrawals", () => {
+    const deposit = normalizeAndClassifyTransaction(
+      validRaw, "12345678901234", "2026-07-15T15:00:00+09:00", classificationOptions,
+    );
+    const withdrawal = normalizeAndClassifyTransaction(
+      { ...validRaw, transactionTypeText: "출금", withdrawalText: "100", depositText: "0" },
+      "12345678901234", "2026-07-15T15:00:00+09:00", classificationOptions,
+    );
+    expect(deposit.kind).toBe("transaction");
+    expect(withdrawal.kind).toBe("transaction");
   });
 
   it("rejects transactions outside the requested lookup period", () => {

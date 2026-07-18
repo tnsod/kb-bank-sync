@@ -15,6 +15,17 @@ export interface TransactionValidationContext {
   lookupEndDate: string;
 }
 
+export const INFORMATIONAL_ROW_REASON = "ZERO_AMOUNT_EMPTY_TRANSACTION_TYPE" as const;
+
+export type NormalizedTransactionResult =
+  | { kind: "transaction"; transaction: TransactionWithoutSourceKey }
+  | { kind: "informational_row"; reason: typeof INFORMATIONAL_ROW_REASON };
+
+export interface TransactionClassificationOptions {
+  validationContext?: TransactionValidationContext;
+  informationalRowStructureValidated: boolean;
+}
+
 type ValidationDiagnosticInput = Omit<
   TransactionValidationDiagnostic,
   "topLevelCode" | "transactionIndex" | "transactionCount" | keyof TransactionValidationStructureContext
@@ -86,12 +97,13 @@ function validationError(
   }, cause === undefined ? undefined : { cause });
 }
 
-export function normalizeAndValidateTransaction(
+function normalizeTransactionCandidate(
   raw: RawKbTransaction,
   accountNumber: string,
   collectedAt: string,
   context?: TransactionValidationContext,
-): TransactionWithoutSourceKey {
+  informationalRowStructureValidated = false,
+): NormalizedTransactionResult {
   const description = normalizeText(raw.descriptionText);
   if (description === "") {
     throw validationError(
@@ -171,18 +183,6 @@ export function normalizeAndValidateTransaction(
       },
     );
   }
-  if (withdrawal === 0 && deposit === 0) {
-    throw validationError(
-      "입금액과 출금액이 모두 0입니다", "NEITHER_WITHDRAWAL_NOR_DEPOSIT",
-      "amount_exclusivity_validation", `${raw.withdrawalText}${raw.depositText}`,
-      {
-        failedFieldName: "withdrawal/deposit", failedRuleName: "one_nonzero_amount_required",
-        normalizedFieldPresent: true, numericParsingSucceeded: true, dateParsingSucceeded: null,
-        withdrawalState: amountState(withdrawal), depositState: amountState(deposit), balancePresent: balance !== null,
-      },
-    );
-  }
-
   let occurredAt: string;
   try {
     occurredAt = normalizeOccurredAt(raw.dateText, raw.timeText);
@@ -212,6 +212,21 @@ export function normalizeAndValidateTransaction(
     );
   }
   const transactionType = normalizeNullableText(raw.transactionTypeText);
+  if (informationalRowStructureValidated && withdrawal === 0 && deposit === 0 &&
+    raw.transactionTypeText.trim() === "" && transactionType === null) {
+    return { kind: "informational_row", reason: INFORMATIONAL_ROW_REASON };
+  }
+  if (withdrawal === 0 && deposit === 0) {
+    throw validationError(
+      "입금액과 출금액이 모두 0입니다", "NEITHER_WITHDRAWAL_NOR_DEPOSIT",
+      "amount_exclusivity_validation", `${raw.withdrawalText}${raw.depositText}`,
+      {
+        failedFieldName: "withdrawal/deposit", failedRuleName: "one_nonzero_amount_required",
+        normalizedFieldPresent: true, numericParsingSucceeded: true, dateParsingSucceeded: true,
+        withdrawalState: amountState(withdrawal), depositState: amountState(deposit), balancePresent: balance !== null,
+      },
+    );
+  }
   if (transactionType?.includes("입금") === true && !transactionType.includes("출금") &&
     (deposit <= 0 || withdrawal > 0)) {
     throw validationError(
@@ -238,16 +253,47 @@ export function normalizeAndValidateTransaction(
   }
 
   return {
-    bank: "KB",
-    accountId: accountIdFromNumber(accountNumber),
-    occurredAt,
-    transactionType,
-    description,
-    memo: normalizeNullableText(raw.memoText),
-    withdrawal,
-    deposit,
-    balance,
-    branch: normalizeNullableText(raw.branchText),
-    collectedAt,
+    kind: "transaction",
+    transaction: {
+      bank: "KB",
+      accountId: accountIdFromNumber(accountNumber),
+      occurredAt,
+      transactionType,
+      description,
+      memo: normalizeNullableText(raw.memoText),
+      withdrawal,
+      deposit,
+      balance,
+      branch: normalizeNullableText(raw.branchText),
+      collectedAt,
+    },
   };
+}
+
+export function normalizeAndClassifyTransaction(
+  raw: RawKbTransaction,
+  accountNumber: string,
+  collectedAt: string,
+  options: TransactionClassificationOptions,
+): NormalizedTransactionResult {
+  return normalizeTransactionCandidate(
+    raw,
+    accountNumber,
+    collectedAt,
+    options.validationContext,
+    options.informationalRowStructureValidated,
+  );
+}
+
+export function normalizeAndValidateTransaction(
+  raw: RawKbTransaction,
+  accountNumber: string,
+  collectedAt: string,
+  context?: TransactionValidationContext,
+): TransactionWithoutSourceKey {
+  const result = normalizeTransactionCandidate(raw, accountNumber, collectedAt, context);
+  if (result.kind !== "transaction") {
+    throw new Error("Informational row classification requires explicit structural validation");
+  }
+  return result.transaction;
 }

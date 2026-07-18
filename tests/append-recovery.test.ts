@@ -15,7 +15,7 @@ const transactions: Transaction[] = [1, 2].map((number) => ({
 const guard: SheetsWriteGuard = {
   dryRun: false, sheetsWriteEnabled: true, lookupStatus: "success", resultContainerDetected: true,
   transactionTableDetected: true, pageStructureValidated: true, allTransactionsValidated: true,
-  parsedTransactionCount: 2, normalizedTransactionCount: 2, newTransactionCount: 2,
+  parsedTransactionCount: 2, skippedInformationalRowCount: 0, normalizedTransactionCount: 2, newTransactionCount: 2,
   sheetHeadersValidated: true, missingSourceKeyRowCount: 0,
 };
 

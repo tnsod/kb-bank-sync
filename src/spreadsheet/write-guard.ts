@@ -9,6 +9,7 @@ export interface SheetsWriteGuard {
   pageStructureValidated: boolean;
   allTransactionsValidated: boolean;
   parsedTransactionCount: number;
+  skippedInformationalRowCount: number;
   normalizedTransactionCount: number;
   newTransactionCount: number;
   sheetHeadersValidated: boolean;
@@ -21,7 +22,8 @@ export function assertSheetsWriteAllowed(guard: SheetsWriteGuard): void {
   }
   const allowed = guard.lookupStatus === "success" &&
     guard.resultContainerDetected && guard.transactionTableDetected && guard.pageStructureValidated &&
-    guard.allTransactionsValidated && guard.parsedTransactionCount === guard.normalizedTransactionCount &&
+    guard.allTransactionsValidated &&
+    guard.parsedTransactionCount === guard.normalizedTransactionCount + guard.skippedInformationalRowCount &&
     guard.newTransactionCount > 0 && guard.sheetHeadersValidated && guard.missingSourceKeyRowCount === 0;
   if (!allowed) throw new SyncError("SHEETS_WRITE_GUARD_REJECTED", "Google Sheets 쓰기 보호 조건을 충족하지 못했습니다");
 }

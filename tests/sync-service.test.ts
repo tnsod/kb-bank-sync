@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { Logger } from "pino";
 
 import { fingerprintTransaction } from "../src/transaction/fingerprint.js";
 import { normalizeAndValidateTransaction } from "../src/transaction/validate.js";
@@ -32,6 +33,125 @@ describe("sync service", () => {
     });
     expect(summary).toMatchObject({ status: "dry_run", scrapedCount: 1, uniqueScrapedCount: 1, newTransactionCount: 1, appendCalled: false });
     expect(appendTransactions).not.toHaveBeenCalled();
+  });
+
+  it("skips a structurally valid informational row and counts only normal transactions as scraped", async () => {
+    const privateDescription = "PRIVATE_INFORMATIONAL_DESCRIPTION";
+    const privateMemo = "PRIVATE_INFORMATIONAL_MEMO";
+    const informational = {
+      ...rawTransaction,
+      dateText: "2026.07.14",
+      transactionTypeText: "                ",
+      descriptionText: privateDescription,
+      memoText: privateMemo,
+      withdrawalText: "0",
+      depositText: "-",
+    };
+    const withdrawal = {
+      ...rawTransaction,
+      dateText: "2026.07.13",
+      transactionTypeText: "출금",
+      withdrawalText: "500",
+      depositText: "0",
+    };
+    const info = vi.fn();
+    const appendTransactions = vi.fn();
+    const summary = await runSync(stage2Config, defaultCli, {
+      sheets: sheetClient({ appendTransactions }),
+      lookup: vi.fn().mockResolvedValue(successfulLookup([rawTransaction, informational, withdrawal])),
+      now,
+      collectedAt: () => collectedAt,
+      logger: { info } as unknown as Logger,
+    });
+    expect(summary).toMatchObject({
+      status: "dry_run",
+      parsedRowCount: 3,
+      skippedInformationalRowCount: 1,
+      scrapedCount: 2,
+      fingerprintedCount: 2,
+      uniqueScrapedCount: 2,
+      insertedCount: 0,
+      appendCalled: false,
+    });
+    expect(info).toHaveBeenCalledWith({
+      event: "informational_row_skipped",
+      transactionIndex: 1,
+      reason: "ZERO_AMOUNT_EMPTY_TRANSACTION_TYPE",
+    }, "Informational row skipped");
+    expect(JSON.stringify(info.mock.calls)).not.toContain(privateDescription);
+    expect(JSON.stringify(info.mock.calls)).not.toContain(privateMemo);
+    expect(appendTransactions).not.toHaveBeenCalled();
+  });
+
+  it("returns a normal no-new-transactions status when every parsed row is informational", async () => {
+    const informationalRows = ["2026.07.15", "2026.07.14"].map((dateText) => ({
+      ...rawTransaction,
+      dateText,
+      transactionTypeText: " ",
+      withdrawalText: "0",
+      depositText: "0",
+    }));
+    const appendTransactions = vi.fn();
+    const summary = await runSync(stage2Config, defaultCli, {
+      sheets: sheetClient({ appendTransactions }),
+      lookup: vi.fn().mockResolvedValue(successfulLookup(informationalRows)),
+      now,
+      collectedAt: () => collectedAt,
+    });
+    expect(summary).toMatchObject({
+      status: "no_new_transactions",
+      parsedRowCount: 2,
+      skippedInformationalRowCount: 2,
+      scrapedCount: 0,
+      fingerprintedCount: 0,
+      insertedCount: 0,
+      appendCalled: false,
+    });
+    expect(appendTransactions).not.toHaveBeenCalled();
+  });
+
+  it("never fingerprints or appends the informational row during a write-enabled run", async () => {
+    const informational = {
+      ...rawTransaction,
+      dateText: "2026.07.14",
+      transactionTypeText: "\t ",
+      withdrawalText: "0",
+      depositText: "0",
+    };
+    const appendTransactions = vi.fn().mockResolvedValue({ appendedRowCount: 1, updatedRange: "Sheet1!A2:L2" });
+    const summary = await runSync({ ...stage2Config, DRY_RUN: false, ENABLE_SHEETS_WRITE: true }, defaultCli, {
+      sheets: sheetClient({ appendTransactions }),
+      lookup: vi.fn().mockResolvedValue(successfulLookup([rawTransaction, informational])),
+      now,
+      collectedAt: () => collectedAt,
+    });
+    expect(summary).toMatchObject({
+      status: "success",
+      parsedRowCount: 2,
+      skippedInformationalRowCount: 1,
+      scrapedCount: 1,
+      fingerprintedCount: 1,
+      insertedCount: 1,
+      appendCalled: true,
+    });
+    expect(appendTransactions).toHaveBeenCalledOnce();
+    expect(appendTransactions.mock.calls[0]?.[0]).toHaveLength(1);
+  });
+
+  it("keeps rejecting a zero-amount blank-type row when its detail structure is not validated", async () => {
+    const lookup = successfulLookup([{
+      ...rawTransaction,
+      transactionTypeText: " ",
+      withdrawalText: "0",
+      depositText: "0",
+    }]);
+    if (lookup.rowDiagnostics === null) throw new Error("Expected row diagnostics");
+    lookup.rowDiagnostics = { ...lookup.rowDiagnostics, detailRowsMatchedToTransactions: false };
+    await expect(runSync(stage2Config, defaultCli, {
+      sheets: sheetClient(), lookup: vi.fn().mockResolvedValue(lookup), now, collectedAt: () => collectedAt,
+    })).rejects.toMatchObject({
+      validationDiagnostic: { validationErrorCode: "NEITHER_WITHDRAWAL_NOR_DEPOSIT" },
+    });
   });
 
   it("preserves the zero-based transaction index and total count for validation failures", async () => {
