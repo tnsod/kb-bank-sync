@@ -154,6 +154,27 @@ describe("sync service", () => {
     });
   });
 
+  it("does not require optional detail colspan metadata after one-to-one detail linkage is validated", async () => {
+    const lookup = successfulLookup([{
+      ...rawTransaction,
+      transactionTypeText: " ",
+      withdrawalText: "0",
+      depositText: "0",
+    }]);
+    if (lookup.rowDiagnostics === null) throw new Error("Expected row diagnostics");
+    lookup.rowDiagnostics = { ...lookup.rowDiagnostics, detailColspanValidated: false };
+    const summary = await runSync(stage2Config, defaultCli, {
+      sheets: sheetClient(), lookup: vi.fn().mockResolvedValue(lookup), now, collectedAt: () => collectedAt,
+    });
+    expect(summary).toMatchObject({
+      status: "no_new_transactions",
+      parsedRowCount: 1,
+      skippedInformationalRowCount: 1,
+      scrapedCount: 0,
+      appendCalled: false,
+    });
+  });
+
   it("preserves the zero-based transaction index and total count for validation failures", async () => {
     const privateDescription = "PRIVATE_TRANSACTION_DESCRIPTION";
     const lookup = successfulLookup([

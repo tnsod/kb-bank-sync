@@ -131,7 +131,7 @@ function hasValidatedInformationalRowStructure(lookup: KbLookupResult, transacti
     diagnostics.detailRowCount === parsedRowCount &&
     diagnostics.matchedDetailRowCount === parsedRowCount &&
     diagnostics.unmatchedDetailRowCount === 0 && diagnostics.orphanDetailRowCount === 0 &&
-    diagnostics.detailRowsMatchedToTransactions && diagnostics.detailRowsFollowMain && diagnostics.detailColspanValidated &&
+    diagnostics.detailRowsMatchedToTransactions && diagnostics.detailRowsFollowMain &&
     diagnostics.transactionStructures?.length === parsedRowCount &&
     structure.selectedRowCellCount === 8 && structure.columnMappingMatchesHeader &&
     structure.headerTransactionTypeCellIndex !== null && structure.headerTransactionTypeCellIndex >= 0 &&
