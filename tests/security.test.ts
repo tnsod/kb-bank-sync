@@ -34,6 +34,7 @@ describe("sensitive logging guard", () => {
     const contents = await Promise.all([
       readFile(path.join(fixtureDirectory, "kb-result-success.html"), "utf8"),
       readFile(path.join(fixtureDirectory, "kb-result-empty.html"), "utf8"),
+      readFile(path.join(fixtureDirectory, "kb-result-mixed-detail-roles.html"), "utf8"),
     ]);
     for (const html of contents) {
       expect(html).not.toMatch(/\d{10,16}/u);

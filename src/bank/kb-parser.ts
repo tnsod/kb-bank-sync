@@ -21,10 +21,14 @@ export interface ParseOptions {
 export type DetailRowRole =
   | "empty"
   | "transaction_memo"
+  | "sender_description"
+  | "receiver_description"
   | "additional_description"
   | "accessibility_duplicate"
   | "layout_only"
   | "unknown";
+
+type DetailRowRoleFamily = "sender_side" | "receiver_side" | "neutral" | "unknown";
 
 export interface TransactionRowDiagnostics {
   totalBodyRowCount: number;
@@ -227,10 +231,15 @@ function classifyDetailRow(
   secondaryHeaderText: string,
   diagnostics: ParserStructureDiagnostics,
   transactions: readonly RawKbTransaction[],
-): { role: DetailRowRole; colspanValidated: boolean } | null {
+): { role: DetailRowRole; family: DetailRowRoleFamily; colspanValidated: boolean } | null {
   if (cells.length !== 1) return null;
   const directHeaders = row.querySelectorAll(":scope > th");
-  const headerText = normalizeText([directHeaders.map((header) => header.text).join(" "), secondaryHeaderText].join(" "));
+  const directHeaderText = normalizeText(directHeaders.map((header) => header.text).join(" "));
+  const knownRoleHeader = /(?:메모|통장표시|의뢰인|보낸분|보내는분|송금인|수취인|받는분|받으실분)/u;
+  const roleHeaderText = knownRoleHeader.test(directHeaderText)
+    ? directHeaderText
+    : (secondaryHeaderText || directHeaderText);
+  const headerText = normalizeText([directHeaderText, secondaryHeaderText].join(" "));
   const value = normalizeText(cells[0]?.text ?? "");
   const colspan = Number.parseInt(cells[0]?.getAttribute("colspan") ?? "0", 10);
   const logicalColumnCount = directHeaders.length + (Number.isFinite(colspan) ? colspan : 0);
@@ -240,20 +249,30 @@ function classifyDetailRow(
   if (previous === undefined) {
     throw parserError("상세 행 앞에 본거래 행이 없습니다", "ORPHAN_DETAIL_ROW", "row_classification", diagnostics, transactions);
   }
-  if (value === "") return { role: "empty", colspanValidated };
-  if (/(?:메모|통장표시)/u.test(headerText)) {
+  if (value === "") return { role: "empty", family: "neutral", colspanValidated };
+  if (/(?:메모|통장표시)/u.test(roleHeaderText)) {
     appendDetailText(previous, value);
-    return { role: "transaction_memo", colspanValidated };
+    return { role: "transaction_memo", family: "neutral", colspanValidated };
   }
-  if (/(?:의뢰인|수취인|보낸분|받는분)/u.test(headerText)) {
+  const senderSide = /(?:의뢰인|보낸분|보내는분|송금인)/u.test(roleHeaderText);
+  const receiverSide = /(?:수취인|받는분|받으실분)/u.test(roleHeaderText);
+  if (senderSide && !receiverSide) {
     appendDetailText(previous, value);
-    return { role: "additional_description", colspanValidated };
+    return { role: "sender_description", family: "sender_side", colspanValidated };
+  }
+  if (receiverSide && !senderSide) {
+    appendDetailText(previous, value);
+    return { role: "receiver_description", family: "receiver_side", colspanValidated };
+  }
+  if (senderSide && receiverSide) {
+    appendDetailText(previous, value);
+    return { role: "additional_description", family: "neutral", colspanValidated };
   }
   if ([previous.descriptionText, previous.memoText].some((text) => normalizeText(text) === value)) {
-    return { role: "accessibility_duplicate", colspanValidated };
+    return { role: "accessibility_duplicate", family: "neutral", colspanValidated };
   }
-  if (/^(?:-|—|ㆍ|\u00a0)$/u.test(value)) return { role: "layout_only", colspanValidated };
-  return { role: "unknown", colspanValidated };
+  if (/^(?:-|—|ㆍ|\u00a0)$/u.test(value)) return { role: "layout_only", family: "neutral", colspanValidated };
+  return { role: "unknown", family: "unknown", colspanValidated };
 }
 
 function validateRawRows(transactions: readonly RawKbTransaction[], diagnostics: ParserStructureDiagnostics): void {
@@ -301,6 +320,7 @@ function parseTable(table: HTMLElement, context: ParserTableContext): ParsedTabl
   });
   const transactions: RawKbTransaction[] = [];
   const detailRoles: DetailRowRole[] = [];
+  const detailRoleFamilies: DetailRowRoleFamily[] = [];
   let detailRowsFollowMain = true;
   let detailColspanValidated = true;
   let previousMainHasDetail = true;
@@ -314,6 +334,7 @@ function parseTable(table: HTMLElement, context: ParserTableContext): ParsedTabl
       if (transactions.length === 0 || previousMainHasDetail) detailRowsFollowMain = false;
       previousMainHasDetail = true;
       detailRoles.push(detail.role);
+      detailRoleFamilies.push(detail.family);
       diagnostics.detailRowCount = detailRoles.length;
       detailColspanValidated &&= detail.colspanValidated;
       if (detail.role === "unknown") {
@@ -364,17 +385,37 @@ function parseTable(table: HTMLElement, context: ParserTableContext): ParsedTabl
     );
   }
   const distinctRoles = [...new Set(detailRoles)];
-  if (distinctRoles.length > 1) {
-    diagnostics.detailRowsMatchedToTransactions = false;
-    throw parserError(
-      "거래 상세 행 역할이 거래마다 일치하지 않습니다",
-      "INCONSISTENT_DETAIL_ROW_ROLE",
-      "detail_link_validation",
-      diagnostics,
-      transactions,
-    );
-  }
+  const distinctRoleFamilies = [...new Set(detailRoleFamilies)];
   refreshValueDiagnostics(transactions, diagnostics);
+  if (distinctRoles.length > 1 || distinctRoleFamilies.length > 1) {
+    if (diagnostics.dateParseFailureCount > 0) {
+      throw parserError(
+        "혼합 상세 역할 거래의 날짜를 검증할 수 없습니다",
+        "INVALID_TRANSACTION_DATE",
+        "date_normalization",
+        diagnostics,
+        transactions,
+      );
+    }
+    if (diagnostics.amountParseFailureCount > 0) {
+      throw parserError(
+        "혼합 상세 역할 거래의 금액을 검증할 수 없습니다",
+        "INVALID_AMOUNT",
+        "amount_normalization",
+        diagnostics,
+        transactions,
+      );
+    }
+    if (diagnostics.balanceParseFailureCount > 0) {
+      throw parserError(
+        "혼합 상세 역할 거래의 잔액을 검증할 수 없습니다",
+        "INVALID_BALANCE",
+        "balance_normalization",
+        diagnostics,
+        transactions,
+      );
+    }
+  }
   return {
     transactions,
     parserDiagnostics: diagnostics,
@@ -387,7 +428,7 @@ function parseTable(table: HTMLElement, context: ParserTableContext): ParsedTabl
       orphanDetailRowCount: 0,
       detailRowsMatchedToTransactions: detailRowsFollowMain &&
         (detailRoles.length === 0 || detailRoles.length === transactions.length),
-      detailRowRole: distinctRoles[0] ?? null,
+      detailRowRole: distinctRoles.length === 1 ? (distinctRoles[0] ?? null) : null,
       detailRowsFollowMain,
       detailColspanValidated,
     },

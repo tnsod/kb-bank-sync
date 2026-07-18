@@ -18,6 +18,28 @@ import type { Frame } from "playwright";
 const fixturePath = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "kb-transactions-sanitized.html");
 const actualStructureSuccessFixture = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "kb-result-success.html");
 const actualStructureEmptyFixture = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "kb-result-empty.html");
+const mixedDetailRolesFixture = path.join(
+  path.dirname(fileURLToPath(import.meta.url)), "fixtures", "kb-result-mixed-detail-roles.html",
+);
+
+function detailRoleTable(detailRows: readonly string[]): string {
+  const mainRows = detailRows.map((detail, index) => `
+    <tr>
+      <td>2026-01-0${index + 1} 0${index + 1}:00:00</td><td>가상항목-${index + 1}</td><td>샘플-${index + 1}</td>
+      <td>${index % 2 === 0 ? index + 1 : ""}</td><td>${index % 2 === 0 ? "" : index + 1}</td>
+      <td>${100 + index}</td><td>샘플점</td><td>${index % 2 === 0 ? "출금" : "입금"}</td>
+    </tr>
+    ${detail}`).join("");
+  return `
+    <table class="tType01"><thead>
+      <tr><th>거래일시</th><th>적요</th><th>내통장표시내용</th><th>출금금액</th><th>입금금액</th><th>잔액</th><th>거래점</th><th>구분</th></tr>
+      <tr><th>상세정보</th></tr>
+    </thead><tbody>${mainRows}</tbody></table>`;
+}
+
+function knownDetailRow(role: string, value: string): string {
+  return `<tr><th scope="row">${role}</th><td colspan="7">${value}</td></tr>`;
+}
 
 describe("KB transaction parser", () => {
   it("parses privacy-safe transaction rows by their common parent", async () => {
@@ -97,6 +119,113 @@ describe("KB transaction parser", () => {
       detailColspanValidated: true,
     });
     expect(parsed.transactions.every((transaction) => transaction.memoText.includes("테스트사용자"))).toBe(true);
+  });
+
+  it("accepts three matching known detail roles", () => {
+    const html = detailRoleTable([
+      knownDetailRow("보낸분", "샘플표시-A"),
+      knownDetailRow("보낸분", "샘플표시-B"),
+      knownDetailRow("보낸분", "샘플표시-C"),
+    ]);
+    const parsed = parseRawTransactionsWithDiagnostics(html, { expectedTransactionCount: 3 });
+    expect(parsed.transactions).toHaveLength(3);
+    expect(parsed.rowDiagnostics).toMatchObject({
+      detailRowRole: "sender_description",
+      detailRowsMatchedToTransactions: true,
+      detailRowsFollowMain: true,
+    });
+  });
+
+  it("accepts mixed sender, receiver, and neutral known detail roles", async () => {
+    const html = await readFile(mixedDetailRolesFixture, "utf8");
+    const parsed = parseRawTransactionsWithDiagnostics(html, { expectedTransactionCount: 3 });
+    expect(parsed.transactions).toHaveLength(3);
+    expect(parsed.rowDiagnostics).toMatchObject({
+      totalBodyRowCount: 6,
+      mainTransactionRowCount: 3,
+      detailRowCount: 3,
+      detailRowsMatchedToTransactions: true,
+      detailRowRole: null,
+      detailRowsFollowMain: true,
+      detailColspanValidated: true,
+    });
+  });
+
+  it.each([
+    {
+      name: "date",
+      search: "2026.01.02 02:02:02",
+      replacement: "2026.02.30 02:02:02",
+      parserErrorCode: "INVALID_TRANSACTION_DATE",
+    },
+    {
+      name: "amount",
+      search: "<td></td><td>202</td><td>1203</td>",
+      replacement: "<td></td><td>invalid</td><td>1203</td>",
+      parserErrorCode: "INVALID_AMOUNT",
+    },
+    {
+      name: "balance",
+      search: "<td></td><td>202</td><td>1203</td>",
+      replacement: "<td></td><td>202</td><td>invalid</td>",
+      parserErrorCode: "INVALID_BALANCE",
+    },
+  ] as const)("rejects mixed known roles when $name parsing fails", async ({ search, replacement, parserErrorCode }) => {
+    const fixture = await readFile(mixedDetailRolesFixture, "utf8");
+    expect(fixture).toContain(search);
+    try {
+      parseRawTransactionsWithDiagnostics(fixture.replace(search, replacement), { expectedTransactionCount: 3 });
+      expect.fail("Expected a parser error");
+    } catch (error) {
+      expect(parserFailureDiagnostic(error as TransactionParseError)).toMatchObject({ parserErrorCode });
+    }
+  });
+
+  it("accepts mixed known neutral detail roles", () => {
+    const html = detailRoleTable([
+      knownDetailRow("메모", "샘플메모-A"),
+      knownDetailRow("상세정보", "-"),
+      knownDetailRow("상세정보", "가상항목-3"),
+    ]);
+    const parsed = parseRawTransactionsWithDiagnostics(html, { expectedTransactionCount: 3 });
+    expect(parsed.transactions).toHaveLength(3);
+    expect(parsed.rowDiagnostics).toMatchObject({ detailRowsMatchedToTransactions: true, detailRowsFollowMain: true });
+  });
+
+  it.each([
+    {
+      name: "a missing detail row",
+      rows: [knownDetailRow("보낸분", "샘플-A"), "", knownDetailRow("받는분", "샘플-C")],
+    },
+    {
+      name: "an excessive detail row",
+      rows: [
+        `${knownDetailRow("보낸분", "샘플-A")}${knownDetailRow("받는분", "샘플-과다")}`,
+        knownDetailRow("받는분", "샘플-B"),
+        knownDetailRow("메모", "샘플-C"),
+      ],
+    },
+    {
+      name: "an out-of-order detail row",
+      rows: [
+        "",
+        `${knownDetailRow("보낸분", "샘플-A")}${knownDetailRow("받는분", "샘플-B")}`,
+        knownDetailRow("메모", "샘플-C"),
+      ],
+    },
+  ])("rejects $name while preserving the 1:1 alternating guard", ({ rows }) => {
+    expect(() => parseRawTransactionsWithDiagnostics(detailRoleTable(rows), { expectedTransactionCount: 3 }))
+      .toThrowError(TransactionParseError);
+    try {
+      parseRawTransactionsWithDiagnostics(detailRoleTable(rows), { expectedTransactionCount: 3 });
+      expect.fail("Expected a parser error");
+    } catch (error) {
+      expect(parserFailureDiagnostic(error as TransactionParseError)).toMatchObject({
+        parserErrorCode: "MISSING_DETAIL_ROW",
+        parserStage: "detail_link_validation",
+        detailRowsMatchedToTransactions: false,
+      });
+    }
   });
 
   it("rejects an unknown one-cell detail row instead of discarding it", () => {
