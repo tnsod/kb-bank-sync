@@ -9,6 +9,65 @@ export type KbErrorCode =
   | "TRANSACTION_VALIDATION_ERROR"
   | "NETWORK_ERROR";
 
+export type ParserErrorCode =
+  | "HEADER_MISMATCH"
+  | "UNEXPECTED_ROW_CELL_COUNT"
+  | "ORPHAN_DETAIL_ROW"
+  | "MISSING_DETAIL_ROW"
+  | "UNKNOWN_DETAIL_ROW"
+  | "INCONSISTENT_DETAIL_ROW_ROLE"
+  | "INVALID_TRANSACTION_DATE"
+  | "INVALID_AMOUNT"
+  | "INVALID_BALANCE"
+  | "NO_TRANSACTION_ROWS"
+  | "MULTIPLE_CANDIDATE_TABLES"
+  | "PAGINATION_DETECTED"
+  | "SCREEN_TRANSACTION_COUNT_MISMATCH"
+  | "COLUMN_LENGTH_MISMATCH"
+  | "TRANSACTION_TABLE_NOT_FOUND"
+  | "UNCLASSIFIED_TRANSACTION_PARSE_ERROR";
+
+export type ParserStage =
+  | "table_discovery"
+  | "header_validation"
+  | "row_classification"
+  | "row_shape_validation"
+  | "detail_link_validation"
+  | "transaction_validation"
+  | "screen_count_validation"
+  | "column_validation"
+  | "date_normalization"
+  | "amount_normalization"
+  | "balance_normalization"
+  | "transaction_parse";
+
+export interface ParserStructureDiagnostics {
+  tableCount: number;
+  candidateTableCount: number;
+  selectedTableIndex: number | null;
+  selectedTableRowCount: number | null;
+  selectedTableColumnCount: number | null;
+  headerRowCount: number;
+  dataRowCount: number;
+  detailRowCount: number;
+  rowCellCounts: number[];
+  mainTransactionCandidateCount: number;
+  detailRowCandidateCount: number;
+  headerMatched: boolean;
+  dateParseSuccessCount: number;
+  dateParseFailureCount: number;
+  amountParseSuccessCount: number;
+  amountParseFailureCount: number;
+  balanceParseSuccessCount: number;
+  balanceParseFailureCount: number;
+  detailRowsMatchedToTransactions: boolean | null;
+}
+
+export interface ParserFailureDiagnostic extends ParserStructureDiagnostics {
+  parserErrorCode: ParserErrorCode;
+  parserStage: ParserStage;
+}
+
 export class KbSyncError extends Error {
   constructor(
     message: string,
@@ -64,9 +123,52 @@ export class NetworkError extends KbSyncError {
 }
 
 export class TransactionParseError extends KbSyncError {
-  constructor(message: string, options?: ErrorOptions) {
-    super(message, "TRANSACTION_PARSE_ERROR", "transaction_parse", options);
+  readonly parserErrorCode: ParserErrorCode;
+  readonly parserStage: ParserStage;
+  readonly parserDiagnostics: ParserStructureDiagnostics | null;
+
+  constructor(
+    message: string,
+    diagnostic: {
+      parserErrorCode?: ParserErrorCode;
+      parserStage?: ParserStage;
+      parserDiagnostics?: ParserStructureDiagnostics | null;
+    } = {},
+    options?: ErrorOptions,
+  ) {
+    super(message, "TRANSACTION_PARSE_ERROR", diagnostic.parserStage ?? "transaction_parse", options);
+    this.parserErrorCode = diagnostic.parserErrorCode ?? "UNCLASSIFIED_TRANSACTION_PARSE_ERROR";
+    this.parserStage = diagnostic.parserStage ?? "transaction_parse";
+    this.parserDiagnostics = diagnostic.parserDiagnostics ?? null;
   }
+}
+
+export function parserFailureDiagnostic(error: TransactionParseError): ParserFailureDiagnostic {
+  return {
+    parserErrorCode: error.parserErrorCode,
+    parserStage: error.parserStage,
+    ...(error.parserDiagnostics ?? {
+      tableCount: 0,
+      candidateTableCount: 0,
+      selectedTableIndex: null,
+      selectedTableRowCount: null,
+      selectedTableColumnCount: null,
+      headerRowCount: 0,
+      dataRowCount: 0,
+      detailRowCount: 0,
+      rowCellCounts: [],
+      mainTransactionCandidateCount: 0,
+      detailRowCandidateCount: 0,
+      headerMatched: false,
+      dateParseSuccessCount: 0,
+      dateParseFailureCount: 0,
+      amountParseSuccessCount: 0,
+      amountParseFailureCount: 0,
+      balanceParseSuccessCount: 0,
+      balanceParseFailureCount: 0,
+      detailRowsMatchedToTransactions: null,
+    }),
+  };
 }
 
 export class TransactionValidationError extends KbSyncError {

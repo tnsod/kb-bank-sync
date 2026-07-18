@@ -12,6 +12,7 @@ import {
 } from "../src/bank/kb-parser.js";
 import { normalizeAndValidateTransaction } from "../src/transaction/validate.js";
 import { KB_SELECTORS } from "../src/config/selectors.js";
+import { TransactionParseError, parserFailureDiagnostic } from "../src/bank/kb-errors.js";
 import type { Frame } from "playwright";
 
 const fixturePath = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "kb-transactions-sanitized.html");
@@ -99,17 +100,76 @@ describe("KB transaction parser", () => {
   });
 
   it("rejects an unknown one-cell detail row instead of discarding it", () => {
+    const privateDetail = "PRIVATE_COUNTERPARTY_DETAIL";
     const html = `
       <table><thead><tr><th>거래일시</th><th>적요</th><th>출금금액</th><th>입금금액</th></tr></thead><tbody>
         <tr><td>2026-07-01 10:00:00</td><td>테스트</td><td>-</td><td>10000</td></tr>
-        <tr><th>알수없음</th><td colspan="3">확정할 수 없는 값</td></tr>
+        <tr><th>알수없음</th><td colspan="3">${privateDetail}</td></tr>
       </tbody></table>`;
-    expect(() => parseRawTransactionsWithDiagnostics(html)).toThrow(/역할/u);
+    try {
+      parseRawTransactionsWithDiagnostics(html);
+      expect.fail("Expected a parser error");
+    } catch (error) {
+      expect(error).toBeInstanceOf(TransactionParseError);
+      const diagnostic = parserFailureDiagnostic(error as TransactionParseError);
+      expect(diagnostic).toMatchObject({
+        parserErrorCode: "UNKNOWN_DETAIL_ROW",
+        parserStage: "row_classification",
+        tableCount: 1,
+        candidateTableCount: 1,
+        selectedTableIndex: 0,
+        rowCellCounts: [4, 1],
+        mainTransactionCandidateCount: 1,
+        detailRowCandidateCount: 1,
+      });
+      expect(JSON.stringify(diagnostic)).not.toContain(privateDetail);
+    }
+  });
+
+  it("reports structural counts without retaining cell text for an unexpected row width", () => {
+    const privateCell = "PRIVATE_DESCRIPTION_VALUE";
+    const html = `
+      <table><thead><tr><th>거래일시</th><th>적요</th><th>출금금액</th><th>입금금액</th></tr></thead><tbody>
+        <tr><td>2026-07-01 10:00:00</td><td>${privateCell}</td><td>10000</td></tr>
+      </tbody></table>`;
+    try {
+      parseRawTransactionsWithDiagnostics(html);
+      expect.fail("Expected a parser error");
+    } catch (error) {
+      expect(error).toBeInstanceOf(TransactionParseError);
+      const diagnostic = parserFailureDiagnostic(error as TransactionParseError);
+      expect(diagnostic).toMatchObject({
+        parserErrorCode: "UNEXPECTED_ROW_CELL_COUNT",
+        parserStage: "row_shape_validation",
+        selectedTableRowCount: 2,
+        selectedTableColumnCount: 4,
+        dataRowCount: 1,
+        rowCellCounts: [3],
+        mainTransactionCandidateCount: 0,
+        detailRowCandidateCount: 0,
+      });
+      expect(JSON.stringify(diagnostic)).not.toContain(privateCell);
+    }
   });
 
   it("rejects a #b028770 screen count mismatch", async () => {
     const html = await readFile(actualStructureSuccessFixture, "utf8");
-    expect(() => parseRawTransactionsFromHtml(html, { expectedTransactionCount: 1 })).toThrow(/건수/u);
+    try {
+      parseRawTransactionsFromHtml(html, { expectedTransactionCount: 1 });
+      expect.fail("Expected a parser error");
+    } catch (error) {
+      expect(error).toBeInstanceOf(TransactionParseError);
+      expect(parserFailureDiagnostic(error as TransactionParseError)).toMatchObject({
+        parserErrorCode: "SCREEN_TRANSACTION_COUNT_MISMATCH",
+        parserStage: "screen_count_validation",
+        mainTransactionCandidateCount: 2,
+        detailRowCandidateCount: 2,
+        dateParseFailureCount: 0,
+        amountParseFailureCount: 0,
+        balanceParseFailureCount: 0,
+        detailRowsMatchedToTransactions: true,
+      });
+    }
   });
 
   it("normalizes the sanitized rows with deposit and withdrawal directions intact", async () => {

@@ -105,6 +105,42 @@ describe("sync service", () => {
     expect(appendTransactions).not.toHaveBeenCalled();
   });
 
+  it("preserves a safe parser failure diagnostic through the final sync summary", async () => {
+    const parserFailure = {
+      parserErrorCode: "UNEXPECTED_ROW_CELL_COUNT" as const,
+      parserStage: "row_shape_validation" as const,
+      tableCount: 3,
+      candidateTableCount: 1,
+      selectedTableIndex: 1,
+      selectedTableRowCount: 8,
+      selectedTableColumnCount: 8,
+      headerRowCount: 2,
+      dataRowCount: 6,
+      detailRowCount: 1,
+      rowCellCounts: [8, 1, 7],
+      mainTransactionCandidateCount: 1,
+      detailRowCandidateCount: 1,
+      headerMatched: true,
+      dateParseSuccessCount: 1,
+      dateParseFailureCount: 0,
+      amountParseSuccessCount: 1,
+      amountParseFailureCount: 0,
+      balanceParseSuccessCount: 1,
+      balanceParseFailureCount: 0,
+      detailRowsMatchedToTransactions: false,
+    };
+    const lookup = {
+      ...successfulLookup([]),
+      status: "page_structure_changed" as const,
+      parserFailure,
+    };
+    const summary = await runSync(stage2Config, defaultCli, {
+      sheets: sheetClient(), lookup: vi.fn().mockResolvedValue(lookup), now,
+    });
+    expect(summary).toMatchObject({ status: "page_structure_changed", parserFailure });
+    expect(JSON.stringify(summary.parserFailure)).not.toMatch(/거래처|적요|금액|잔액/u);
+  });
+
   it("blocks sourceKey migration issues before bank lookup", async () => {
     const lookup = vi.fn();
     await expect(runSync(stage2Config, defaultCli, {

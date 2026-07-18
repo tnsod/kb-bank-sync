@@ -47,13 +47,19 @@ export function normalizeMoney(value: string, options: { nullable?: boolean } = 
     compact = compact.slice(0, -1);
   }
   if (!/^[+-]?\d+(?:\.\d+)?$/u.test(compact)) {
-    throw new TransactionParseError("금액 문자열을 숫자로 변환할 수 없습니다");
+    throw new TransactionParseError("금액 문자열을 숫자로 변환할 수 없습니다", {
+      parserErrorCode: options.nullable === true ? "INVALID_BALANCE" : "INVALID_AMOUNT",
+      parserStage: options.nullable === true ? "balance_normalization" : "amount_normalization",
+    });
   }
 
   const parsed = Number(compact);
   const result = negative ? -Math.abs(parsed) : parsed;
   if (!Number.isFinite(result)) {
-    throw new TransactionParseError("금액이 유한한 숫자가 아닙니다");
+    throw new TransactionParseError("금액이 유한한 숫자가 아닙니다", {
+      parserErrorCode: options.nullable === true ? "INVALID_BALANCE" : "INVALID_AMOUNT",
+      parserStage: options.nullable === true ? "balance_normalization" : "amount_normalization",
+    });
   }
   return result;
 }
@@ -70,7 +76,10 @@ export function normalizeOccurredAt(dateText: string, timeText: string): string 
       return parsedInKorea.format("YYYY-MM-DDTHH:mm:ssZ");
     }
   }
-  throw new TransactionParseError("거래 일시를 한국 시간대로 변환할 수 없습니다");
+  throw new TransactionParseError("거래 일시를 한국 시간대로 변환할 수 없습니다", {
+    parserErrorCode: "INVALID_TRANSACTION_DATE",
+    parserStage: "date_normalization",
+  });
 }
 
 export function nowInKorea(): string {

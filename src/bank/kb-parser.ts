@@ -2,8 +2,13 @@ import { parse, type HTMLElement } from "node-html-parser";
 import type { Frame } from "playwright";
 
 import { KB_SELECTORS } from "../config/selectors.js";
-import { TransactionParseError } from "./kb-errors.js";
-import { normalizeText } from "../transaction/normalize.js";
+import {
+  TransactionParseError,
+  type ParserErrorCode,
+  type ParserStage,
+  type ParserStructureDiagnostics,
+} from "./kb-errors.js";
+import { normalizeMoney, normalizeOccurredAt, normalizeText } from "../transaction/normalize.js";
 import type { RawKbTransaction } from "../transaction/transaction.js";
 
 type RawField = keyof RawKbTransaction;
@@ -39,7 +44,13 @@ export interface ParsedRawTransactions {
   rowDiagnostics: TransactionRowDiagnostics;
 }
 
-type ParsedTable = ParsedRawTransactions;
+type ParsedTable = ParsedRawTransactions & { parserDiagnostics: ParserStructureDiagnostics };
+
+interface ParserTableContext {
+  tableCount: number;
+  candidateTableCount: number;
+  selectedTableIndex: number;
+}
 
 const HEADER_ALIASES: ReadonlyArray<readonly [HeaderField, readonly string[]]> = [
   ["dateTimeText", ["거래일시", "거래일자/시간"]],
@@ -105,6 +116,88 @@ function identifyHeader(value: string): HeaderField | null {
   return null;
 }
 
+function hasRequiredHeaders(headers: readonly (HeaderField | null)[]): boolean {
+  const hasDate = headers.includes("dateText") || headers.includes("dateTimeText");
+  return hasDate && headers.includes("descriptionText") &&
+    headers.includes("withdrawalText") && headers.includes("depositText");
+}
+
+function emptyParserDiagnostics(overrides: Partial<ParserStructureDiagnostics> = {}): ParserStructureDiagnostics {
+  return {
+    tableCount: 0,
+    candidateTableCount: 0,
+    selectedTableIndex: null,
+    selectedTableRowCount: null,
+    selectedTableColumnCount: null,
+    headerRowCount: 0,
+    dataRowCount: 0,
+    detailRowCount: 0,
+    rowCellCounts: [],
+    mainTransactionCandidateCount: 0,
+    detailRowCandidateCount: 0,
+    headerMatched: false,
+    dateParseSuccessCount: 0,
+    dateParseFailureCount: 0,
+    amountParseSuccessCount: 0,
+    amountParseFailureCount: 0,
+    balanceParseSuccessCount: 0,
+    balanceParseFailureCount: 0,
+    detailRowsMatchedToTransactions: null,
+    ...overrides,
+  };
+}
+
+function refreshValueDiagnostics(
+  transactions: readonly RawKbTransaction[],
+  diagnostics: ParserStructureDiagnostics,
+): void {
+  diagnostics.dateParseSuccessCount = 0;
+  diagnostics.dateParseFailureCount = 0;
+  diagnostics.amountParseSuccessCount = 0;
+  diagnostics.amountParseFailureCount = 0;
+  diagnostics.balanceParseSuccessCount = 0;
+  diagnostics.balanceParseFailureCount = 0;
+  for (const transaction of transactions) {
+    try {
+      normalizeOccurredAt(transaction.dateText, transaction.timeText);
+      diagnostics.dateParseSuccessCount += 1;
+    } catch {
+      diagnostics.dateParseFailureCount += 1;
+    }
+    try {
+      normalizeMoney(transaction.withdrawalText);
+      normalizeMoney(transaction.depositText);
+      if (normalizeText(transaction.withdrawalText) === "" && normalizeText(transaction.depositText) === "") {
+        throw new Error("missing amount");
+      }
+      diagnostics.amountParseSuccessCount += 1;
+    } catch {
+      diagnostics.amountParseFailureCount += 1;
+    }
+    try {
+      normalizeMoney(transaction.balanceText, { nullable: true });
+      diagnostics.balanceParseSuccessCount += 1;
+    } catch {
+      diagnostics.balanceParseFailureCount += 1;
+    }
+  }
+}
+
+function parserError(
+  message: string,
+  parserErrorCode: ParserErrorCode,
+  parserStage: ParserStage,
+  diagnostics: ParserStructureDiagnostics,
+  transactions: readonly RawKbTransaction[] = [],
+): TransactionParseError {
+  refreshValueDiagnostics(transactions, diagnostics);
+  return new TransactionParseError(message, {
+    parserErrorCode,
+    parserStage,
+    parserDiagnostics: { ...diagnostics, rowCellCounts: [...diagnostics.rowCellCounts] },
+  });
+}
+
 function splitDateTime(value: string): { dateText: string; timeText: string } {
   const match = normalizeText(value).match(/^(\d{4}[./-]?\d{2}[./-]?\d{2})\s+(.+)$/u);
   if (match?.[1] === undefined || match[2] === undefined) {
@@ -132,6 +225,8 @@ function classifyDetailRow(
   headerCount: number,
   previous: RawKbTransaction | undefined,
   secondaryHeaderText: string,
+  diagnostics: ParserStructureDiagnostics,
+  transactions: readonly RawKbTransaction[],
 ): { role: DetailRowRole; colspanValidated: boolean } | null {
   if (cells.length !== 1) return null;
   const directHeaders = row.querySelectorAll(":scope > th");
@@ -143,7 +238,7 @@ function classifyDetailRow(
   const looksLikeDetail = /(?:의뢰인|수취인|보낸분|받는분|메모|통장표시)/u.test(headerText) || colspanValidated;
   if (!looksLikeDetail) return null;
   if (previous === undefined) {
-    throw new TransactionParseError("상세 행 앞에 본거래 행이 없습니다");
+    throw parserError("상세 행 앞에 본거래 행이 없습니다", "ORPHAN_DETAIL_ROW", "row_classification", diagnostics, transactions);
   }
   if (value === "") return { role: "empty", colspanValidated };
   if (/(?:메모|통장표시)/u.test(headerText)) {
@@ -161,27 +256,28 @@ function classifyDetailRow(
   return { role: "unknown", colspanValidated };
 }
 
-function validateRawRows(transactions: readonly RawKbTransaction[]): void {
+function validateRawRows(transactions: readonly RawKbTransaction[], diagnostics: ParserStructureDiagnostics): void {
+  refreshValueDiagnostics(transactions, diagnostics);
   for (const transaction of transactions) {
     if (normalizeText(transaction.dateText) === "") {
-      throw new TransactionParseError("거래 날짜가 비어 있습니다");
+      throw parserError(
+        "거래 날짜가 비어 있습니다", "INVALID_TRANSACTION_DATE", "transaction_validation", diagnostics, transactions,
+      );
     }
     if (normalizeText(transaction.withdrawalText) === "" && normalizeText(transaction.depositText) === "") {
-      throw new TransactionParseError("거래 금액 정보가 비어 있습니다");
+      throw parserError("거래 금액 정보가 비어 있습니다", "INVALID_AMOUNT", "transaction_validation", diagnostics, transactions);
     }
   }
 }
 
-function parseTable(table: HTMLElement): ParsedTable | null {
+function parseTable(table: HTMLElement, context: ParserTableContext): ParsedTable | null {
   const headerRow = table.querySelector("thead tr") ?? table.querySelector("tr");
   if (headerRow === null) return null;
   const headers = headerRow.querySelectorAll("th,td").map((cell) => identifyHeader(cell.text));
   const secondaryHeaderText = normalizeText(
     table.querySelectorAll("thead tr").slice(1).flatMap((row) => row.querySelectorAll("th,td")).map((cell) => cell.text).join(" "),
   );
-  const hasDate = headers.includes("dateText") || headers.includes("dateTimeText");
-  const hasRequiredColumns = hasDate && headers.includes("descriptionText") &&
-    headers.includes("withdrawalText") && headers.includes("depositText");
+  const hasRequiredColumns = hasRequiredHeaders(headers);
   if (!hasRequiredColumns) return null;
 
   const bodyRows = table.querySelectorAll("tbody tr");
@@ -189,6 +285,20 @@ function parseTable(table: HTMLElement): ParsedTable | null {
     ? bodyRows
     : table.querySelectorAll("tr").filter((row) => row !== headerRow))
     .filter((row) => row !== headerRow && !isHiddenOrTemplateRow(row) && !isExplicitEmpty(row.text));
+  const rowCellCounts = candidateRows.map((row) => row.querySelectorAll(":scope > td").length);
+  const diagnostics = emptyParserDiagnostics({
+    tableCount: context.tableCount,
+    candidateTableCount: context.candidateTableCount,
+    selectedTableIndex: context.selectedTableIndex,
+    selectedTableRowCount: table.querySelectorAll("tr").length,
+    selectedTableColumnCount: headers.length,
+    headerRowCount: table.querySelectorAll("thead tr").length || 1,
+    dataRowCount: candidateRows.length,
+    rowCellCounts,
+    mainTransactionCandidateCount: rowCellCounts.filter((count) => count === headers.length).length,
+    detailRowCandidateCount: rowCellCounts.filter((count) => count === 1).length,
+    headerMatched: true,
+  });
   const transactions: RawKbTransaction[] = [];
   const detailRoles: DetailRowRole[] = [];
   let detailRowsFollowMain = true;
@@ -197,19 +307,34 @@ function parseTable(table: HTMLElement): ParsedTable | null {
   for (const row of candidateRows) {
     const cells = row.querySelectorAll(":scope > td");
     if (cells.length === 0) continue;
-    const detail = classifyDetailRow(row, cells, headers.length, transactions.at(-1), secondaryHeaderText);
+    const detail = classifyDetailRow(
+      row, cells, headers.length, transactions.at(-1), secondaryHeaderText, diagnostics, transactions,
+    );
     if (detail !== null) {
       if (transactions.length === 0 || previousMainHasDetail) detailRowsFollowMain = false;
       previousMainHasDetail = true;
       detailRoles.push(detail.role);
+      diagnostics.detailRowCount = detailRoles.length;
       detailColspanValidated &&= detail.colspanValidated;
       if (detail.role === "unknown") {
-        throw new TransactionParseError("거래 상세 행의 역할을 확정할 수 없습니다");
+        throw parserError(
+          "거래 상세 행의 역할을 확정할 수 없습니다",
+          "UNKNOWN_DETAIL_ROW",
+          "row_classification",
+          diagnostics,
+          transactions,
+        );
       }
       continue;
     }
     if (cells.length !== headers.length) {
-      throw new TransactionParseError("거래 행의 필드 개수가 헤더 개수와 일치하지 않습니다");
+      throw parserError(
+        "거래 행의 필드 개수가 헤더 개수와 일치하지 않습니다",
+        "UNEXPECTED_ROW_CELL_COUNT",
+        "row_shape_validation",
+        diagnostics,
+        transactions,
+      );
     }
     if (transactions.length > 0 && !previousMainHasDetail) detailRowsFollowMain = false;
     const raw = emptyRawTransaction();
@@ -226,15 +351,33 @@ function parseTable(table: HTMLElement): ParsedTable | null {
     transactions.push(raw);
     previousMainHasDetail = false;
   }
+  diagnostics.detailRowsMatchedToTransactions = detailRowsFollowMain &&
+    (detailRoles.length === 0 || detailRoles.length === transactions.length);
   if (detailRoles.length > 0 && (!previousMainHasDetail || detailRoles.length !== transactions.length || !detailRowsFollowMain)) {
-    throw new TransactionParseError("본거래 행과 상세 행의 반복 관계가 일치하지 않습니다");
+    diagnostics.detailRowsMatchedToTransactions = false;
+    throw parserError(
+      "본거래 행과 상세 행의 반복 관계가 일치하지 않습니다",
+      "MISSING_DETAIL_ROW",
+      "detail_link_validation",
+      diagnostics,
+      transactions,
+    );
   }
   const distinctRoles = [...new Set(detailRoles)];
   if (distinctRoles.length > 1) {
-    throw new TransactionParseError("거래 상세 행 역할이 거래마다 일치하지 않습니다");
+    diagnostics.detailRowsMatchedToTransactions = false;
+    throw parserError(
+      "거래 상세 행 역할이 거래마다 일치하지 않습니다",
+      "INCONSISTENT_DETAIL_ROW_ROLE",
+      "detail_link_validation",
+      diagnostics,
+      transactions,
+    );
   }
+  refreshValueDiagnostics(transactions, diagnostics);
   return {
     transactions,
+    parserDiagnostics: diagnostics,
     rowDiagnostics: {
       totalBodyRowCount: candidateRows.length,
       mainTransactionRowCount: transactions.length,
@@ -255,12 +398,18 @@ export function combineRawTransactionColumns(columns: Partial<Record<RawField, s
   const requiredFields: readonly RawField[] = ["dateText", "descriptionText", "withdrawalText", "depositText"];
   const requiredLengths = requiredFields.map((field) => columns[field]?.length ?? 0);
   if (new Set(requiredLengths).size !== 1) {
-    throw new TransactionParseError("필수 거래 필드 배열 길이가 일치하지 않습니다");
+    throw new TransactionParseError("필수 거래 필드 배열 길이가 일치하지 않습니다", {
+      parserErrorCode: "COLUMN_LENGTH_MISMATCH",
+      parserStage: "column_validation",
+    });
   }
   const count = requiredLengths[0] ?? 0;
   for (const [field, values] of Object.entries(columns)) {
     if (values !== undefined && values.length !== count) {
-      throw new TransactionParseError(`선택 거래 필드 배열 길이가 일치하지 않습니다: ${field}`);
+      throw new TransactionParseError(`선택 거래 필드 배열 길이가 일치하지 않습니다: ${field}`, {
+        parserErrorCode: "COLUMN_LENGTH_MISMATCH",
+        parserStage: "column_validation",
+      });
     }
   }
 
@@ -270,10 +419,16 @@ export function combineRawTransactionColumns(columns: Partial<Record<RawField, s
       raw[field] = columns[field]?.[index] ?? "";
     }
     if (normalizeText(raw.dateText) === "") {
-      throw new TransactionParseError("거래 날짜가 비어 있습니다");
+      throw new TransactionParseError("거래 날짜가 비어 있습니다", {
+        parserErrorCode: "INVALID_TRANSACTION_DATE",
+        parserStage: "transaction_validation",
+      });
     }
     if (normalizeText(raw.withdrawalText) === "" && normalizeText(raw.depositText) === "") {
-      throw new TransactionParseError("거래 금액 정보가 비어 있습니다");
+      throw new TransactionParseError("거래 금액 정보가 비어 있습니다", {
+        parserErrorCode: "INVALID_AMOUNT",
+        parserStage: "transaction_validation",
+      });
     }
     return raw;
   });
@@ -307,21 +462,48 @@ export function parseRawTransactionsWithDiagnostics(html: string, options: Parse
       },
     };
   }
-  for (const table of root.querySelectorAll("table")) {
-    const parsed = parseTable(table);
+  const tables = root.querySelectorAll("table");
+  const candidateTableCount = tables.filter((table) => {
+    const headerRow = table.querySelector("thead tr") ?? table.querySelector("tr");
+    if (headerRow === null) return false;
+    return hasRequiredHeaders(headerRow.querySelectorAll("th,td").map((cell) => identifyHeader(cell.text)));
+  }).length;
+  for (let tableIndex = 0; tableIndex < tables.length; tableIndex += 1) {
+    const table = tables[tableIndex];
+    if (table === undefined) continue;
+    const parsed = parseTable(table, { tableCount: tables.length, candidateTableCount, selectedTableIndex: tableIndex });
     if (parsed !== null) {
-      validateRawRows(parsed.transactions);
+      validateRawRows(parsed.transactions, parsed.parserDiagnostics);
       if (options.expectedTransactionCount !== undefined && parsed.transactions.length !== options.expectedTransactionCount) {
-        throw new TransactionParseError("화면 거래 건수와 파싱 거래 건수가 일치하지 않습니다");
+        throw parserError(
+          "화면 거래 건수와 파싱 거래 건수가 일치하지 않습니다",
+          "SCREEN_TRANSACTION_COUNT_MISMATCH",
+          "screen_count_validation",
+          parsed.parserDiagnostics,
+          parsed.transactions,
+        );
       }
-      return parsed;
+      return { transactions: parsed.transactions, rowDiagnostics: parsed.rowDiagnostics };
     }
   }
   const split = parseSplitColumns(root);
   if (split !== null) {
-    validateRawRows(split);
+    const splitDiagnostics = emptyParserDiagnostics({
+      tableCount: tables.length,
+      candidateTableCount,
+      dataRowCount: split.length,
+      mainTransactionCandidateCount: split.length,
+      headerMatched: false,
+    });
+    validateRawRows(split, splitDiagnostics);
     if (options.expectedTransactionCount !== undefined && split.length !== options.expectedTransactionCount) {
-      throw new TransactionParseError("화면 거래 건수와 파싱 거래 건수가 일치하지 않습니다");
+      throw parserError(
+        "화면 거래 건수와 파싱 거래 건수가 일치하지 않습니다",
+        "SCREEN_TRANSACTION_COUNT_MISMATCH",
+        "screen_count_validation",
+        splitDiagnostics,
+        split,
+      );
     }
     return {
       transactions: split,
@@ -339,7 +521,11 @@ export function parseRawTransactionsWithDiagnostics(html: string, options: Parse
       },
     };
   }
-  throw new TransactionParseError("지원되는 거래별 부모 또는 필드 배열 구조를 찾지 못했습니다");
+  throw new TransactionParseError("지원되는 거래별 부모 또는 필드 배열 구조를 찾지 못했습니다", {
+    parserErrorCode: candidateTableCount > 1 ? "MULTIPLE_CANDIDATE_TABLES" : "HEADER_MISMATCH",
+    parserStage: candidateTableCount > 1 ? "table_discovery" : "header_validation",
+    parserDiagnostics: emptyParserDiagnostics({ tableCount: tables.length, candidateTableCount }),
+  });
 }
 
 export function parseRawTransactionsFromHtml(html: string, options: ParseOptions = {}): RawKbTransaction[] {
@@ -359,7 +545,15 @@ export async function parseKbTransactions(
     transactionTable.isVisible().catch(() => false),
   ]);
   if (containerCount !== 1 || tableCount !== 1 || !containerVisible || !tableVisible) {
-    throw new TransactionParseError("결과 Page 또는 Frame에서 검증된 거래 테이블을 찾지 못했습니다");
+    throw new TransactionParseError("결과 Page 또는 Frame에서 검증된 거래 테이블을 찾지 못했습니다", {
+      parserErrorCode: "TRANSACTION_TABLE_NOT_FOUND",
+      parserStage: "table_discovery",
+      parserDiagnostics: emptyParserDiagnostics({
+        tableCount,
+        candidateTableCount: tableCount,
+        headerMatched: tableCount === 1,
+      }),
+    });
   }
   return parseRawTransactionsWithDiagnostics(await resultContainer.innerHTML(), options);
 }

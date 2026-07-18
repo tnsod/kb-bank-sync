@@ -73,6 +73,10 @@ async function main(): Promise<void> {
       scrapedCount: summary.scrapedCount, uniqueScrapedCount: summary.uniqueScrapedCount,
       newTransactionCount: summary.newTransactionCount, insertedCount: summary.insertedCount,
       appendCalled: summary.appendCalled, durationMs: summary.durationMs,
+      ...(summary.parserFailure === undefined ? {} : {
+        parserErrorCode: summary.parserFailure.parserErrorCode,
+        parserStage: summary.parserFailure.parserStage,
+      }),
     });
     process.exitCode = ["success", "no_new_transactions", "dry_run", "sheet_initialized", "sheet_migrated",
       "counterparty_description_migrated", "counterparty_description_already_migrated"].includes(summary.status) ? 0 : 1;

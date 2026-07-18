@@ -23,7 +23,10 @@ export function normalizeAndValidateTransaction(
   const deposit = normalizeMoney(raw.depositText);
   const balance = normalizeMoney(raw.balanceText, { nullable: true });
   if (withdrawal === null || deposit === null) {
-    throw new TransactionParseError("입출금액은 null일 수 없습니다");
+    throw new TransactionParseError("입출금액은 null일 수 없습니다", {
+      parserErrorCode: "INVALID_AMOUNT",
+      parserStage: "amount_normalization",
+    });
   }
   if (withdrawal > 0 && deposit > 0) {
     throw new TransactionValidationError("입금액과 출금액이 동시에 양수입니다");

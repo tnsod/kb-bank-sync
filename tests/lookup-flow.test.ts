@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   observeSubmitTransition: vi.fn(),
   captureSafeResultStructure: vi.fn(),
   result: "authentication" as "authentication" | "empty" | "response",
+  responseHtml: "",
 }));
 
 vi.mock("../src/bank/kb-form.js", () => ({ fillLookupForm: mocks.fillLookupForm }));
@@ -101,6 +102,7 @@ describe("one-shot lookup flow", () => {
       paginationDetected: false, nextButtonDetected: false, moreButtonDetected: false,
       emptyDetected: true, sanitizedHtml: "<section data-fixture='kb-result-empty'></section>",
     });
+    mocks.responseHtml = responseFixture;
     mocks.observeSubmitTransition.mockImplementation(async (_context: unknown, page: Page, _submit: unknown, click: () => Promise<void>) => {
       await click();
       const diagnostics = {
@@ -119,7 +121,7 @@ describe("one-shot lookup flow", () => {
           },
           locatedResult: null,
           target: null,
-          resultResponseHtml: responseFixture,
+          resultResponseHtml: mocks.responseHtml,
           authenticationDialogDetected: false,
           unexpectedDialogDetected: false,
         };
@@ -166,6 +168,52 @@ describe("one-shot lookup flow", () => {
     expect(result).toMatchObject({ status: "success", submitted: true, screenTransactionCount: 2 });
     expect(result.rawTransactions).toHaveLength(2);
     expect(submitClick).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let an optional diagnostic hook failure replace a successful parser result", async () => {
+    const { page } = createPage("empty");
+    mocks.result = "response";
+    const onSubmitDiagnostics = vi.fn().mockRejectedValue(Object.assign(new Error("write failed"), { code: "EACCES" }));
+    const onDiagnosticFailure = vi.fn();
+    const result = await performLookup(page, { ...config, ENABLE_RESPONSE_MEMORY_INSPECTION: true }, {
+      onSubmitDiagnostics,
+      onDiagnosticFailure,
+    });
+    expect(result.status).toBe("success");
+    expect(onDiagnosticFailure).toHaveBeenCalledWith({
+      hook: "submit_diagnostics",
+      errorCode: "EACCES",
+      errorType: "Error",
+    });
+  });
+
+  it("preserves the parser error code and safe structure when diagnostic writing also fails", async () => {
+    const privateValue = "PRIVATE_COUNTERPARTY_VALUE";
+    mocks.responseHtml = `
+      <div id="b028770"><table class="tType01">
+        <thead><tr><th>거래일시</th><th>적요</th><th>출금금액</th><th>입금금액</th></tr></thead>
+        <tbody>
+          <tr><td>2026-07-01 10:00:00</td><td>테스트</td><td>-</td><td>10000</td></tr>
+          <tr><th>알수없음</th><td colspan="3">${privateValue}</td></tr>
+        </tbody>
+      </table></div>`;
+    const { page } = createPage("empty");
+    mocks.result = "response";
+    const onSubmitDiagnostics = vi.fn().mockRejectedValue(Object.assign(new Error("write failed"), { code: "EACCES" }));
+    const result = await performLookup(page, { ...config, ENABLE_RESPONSE_MEMORY_INSPECTION: true }, { onSubmitDiagnostics });
+    expect(result.status).toBe("page_structure_changed");
+    expect(result.parserFailure).toMatchObject({
+      parserErrorCode: "UNKNOWN_DETAIL_ROW",
+      parserStage: "row_classification",
+      rowCellCounts: [4, 1],
+    });
+    const persistedDiagnostic = onSubmitDiagnostics.mock.calls.at(-1)?.[0] as { parserFailure?: unknown } | undefined;
+    expect(persistedDiagnostic?.parserFailure).toMatchObject({
+      parserErrorCode: "UNKNOWN_DETAIL_ROW",
+      parserStage: "row_classification",
+    });
+    expect(JSON.stringify(result.parserFailure)).not.toContain(privateValue);
+    expect(JSON.stringify(persistedDiagnostic)).not.toContain(privateValue);
   });
 
   it("uses the element-relative mouse path exactly once when configured", async () => {

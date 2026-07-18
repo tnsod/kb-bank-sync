@@ -45,6 +45,15 @@ async function pauseUntilUserExit(): Promise<void> {
 export function createLookupHooks(config: AppConfig, cli: CliOptions, logger: Logger): LookupHooks {
   return {
     onBeforeSubmit: () => logger.info({ stage: "lookup-submit", keypadValidated: true, enteredLengthValidated: true }),
+    onDiagnosticFailure: (failure) => logger.warn({
+      event: "diagnostic_write_failed",
+      diagnostic: failure.hook,
+      diagnosticPath: failure.hook === "submit_diagnostics"
+        ? "output/submit-diagnostics.json"
+        : "output/result-structure.json",
+      errorCode: failure.errorCode,
+      errorType: failure.errorType,
+    }, "Optional diagnostic output could not be written"),
     ...(cli.captureSanitizedFixture ? { onSafeResultSnapshot: writeSanitizedSnapshot } : {}),
     ...((cli.diagnoseSubmit || config.ENABLE_SUBMIT_TRACING) ? { onSubmitDiagnostics: writeSubmitDiagnostics } : {}),
     ...(cli.pauseAfterSubmit ? { onAfterSubmitObservation: pauseUntilUserExit } : {}),

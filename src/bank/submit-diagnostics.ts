@@ -10,6 +10,7 @@ import type {
 } from "playwright";
 
 import { KB_SELECTORS, LOOKUP_MESSAGE_PATTERNS } from "../config/selectors.js";
+import type { ParserFailureDiagnostic } from "./kb-errors.js";
 import {
   classifyResponseBody,
   collectFormState,
@@ -164,6 +165,7 @@ export interface SubmitDiagnostics {
   resultUrl: SanitizedUrl | null;
   resultContainerDetected: boolean;
   knownResultSelectorMatches: Record<string, boolean>;
+  parserFailure: ParserFailureDiagnostic | null;
   transitionStatus: SubmitTransitionStatus;
   dialogEvents: SanitizedDialogEvent[];
   frameEvents: SanitizedFrameEvent[];
@@ -902,6 +904,7 @@ export async function observeSubmitTransition(
       resultUrl: target === null ? null : sanitizeUrl(target.resultPage.url()),
       resultContainerDetected: locatedResult?.source === "known-result",
       knownResultSelectorMatches,
+      parserFailure: null,
       transitionStatus,
       dialogEvents: state.dialogEvents,
       frameEvents: state.frameEvents,

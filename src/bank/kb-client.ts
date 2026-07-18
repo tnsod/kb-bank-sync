@@ -7,7 +7,14 @@ import { retry } from "../utils/retry.js";
 import { fillLookupForm } from "./kb-form.js";
 import { enterPasswordWithKeypad } from "./kb-keypad.js";
 import { parseKbTransactions, parseRawTransactionsWithDiagnostics, type TransactionRowDiagnostics } from "./kb-parser.js";
-import { LookupTimeoutError, NetworkError, PageStructureError } from "./kb-errors.js";
+import {
+  LookupTimeoutError,
+  NetworkError,
+  PageStructureError,
+  TransactionParseError,
+  parserFailureDiagnostic,
+  type ParserFailureDiagnostic,
+} from "./kb-errors.js";
 import { captureSafeResultStructure, type SafeResultSnapshot } from "./result-diagnostics.js";
 import { observeSubmitTransition, sanitizeUrl, type SubmitDiagnostics } from "./submit-diagnostics.js";
 import { chromiumLaunchOptions, KB_BROWSER_CONTEXT_OPTIONS } from "./browser-mode.js";
@@ -38,6 +45,15 @@ export interface KbLookupResult {
   submitted: boolean;
   submitDiagnostics: SubmitDiagnostics | null;
   rowDiagnostics: TransactionRowDiagnostics | null;
+  parserFailure?: ParserFailureDiagnostic | null;
+}
+
+export type OptionalDiagnosticHookName = "submit_diagnostics" | "safe_result_snapshot";
+
+export interface OptionalDiagnosticHookFailure {
+  hook: OptionalDiagnosticHookName;
+  errorCode: string;
+  errorType: string;
 }
 
 export interface LookupHooks {
@@ -46,6 +62,41 @@ export interface LookupHooks {
   onSafeResultSnapshot?: (snapshot: SafeResultSnapshot) => void | Promise<void>;
   onSubmitDiagnostics?: (diagnostics: SubmitDiagnostics) => void | Promise<void>;
   onAfterSubmitObservation?: () => void | Promise<void>;
+  onDiagnosticFailure?: (failure: OptionalDiagnosticHookFailure) => void | Promise<void>;
+}
+
+function safeHookError(error: unknown): { errorCode: string; errorType: string } {
+  if (typeof error === "object" && error !== null) {
+    const candidate = error as { code?: unknown; name?: unknown };
+    return {
+      errorCode: typeof candidate.code === "string" ? candidate.code : "DIAGNOSTIC_WRITE_FAILED",
+      errorType: typeof candidate.name === "string" ? candidate.name : "Unknown",
+    };
+  }
+  return { errorCode: "DIAGNOSTIC_WRITE_FAILED", errorType: "Unknown" };
+}
+
+async function runOptionalDiagnosticHook<T>(
+  hooks: LookupHooks,
+  hook: OptionalDiagnosticHookName,
+  handler: ((value: T) => void | Promise<void>) | undefined,
+  value: T,
+): Promise<void> {
+  if (handler === undefined) return;
+  try {
+    await handler(value);
+  } catch (error) {
+    try {
+      await hooks.onDiagnosticFailure?.({ hook, ...safeHookError(error) });
+    } catch {
+      // Optional diagnostic reporting must never replace the bank lookup result.
+    }
+  }
+}
+
+function toParserFailure(error: unknown): ParserFailureDiagnostic {
+  if (error instanceof TransactionParseError) return parserFailureDiagnostic(error);
+  return parserFailureDiagnostic(new TransactionParseError("Unexpected transaction parser failure"));
 }
 
 function safePageUrl(page: Page): string {
@@ -115,7 +166,7 @@ export async function performLookup(
     enableSubmitTracing: config.ENABLE_SUBMIT_TRACING,
   });
   observation.diagnostics.cdpTargets = cdpRecorder?.snapshot() ?? null;
-  await hooks.onSubmitDiagnostics?.(observation.diagnostics);
+  await runOptionalDiagnosticHook(hooks, "submit_diagnostics", hooks.onSubmitDiagnostics, observation.diagnostics);
   await hooks.onAfterSubmitObservation?.();
   const safeCurrentUrl = `${observation.diagnostics.activePageUrl.origin}${observation.diagnostics.activePageUrl.pathname}`;
 
@@ -165,12 +216,16 @@ export async function performLookup(
         submitDiagnostics: observation.diagnostics,
         rowDiagnostics: parsed.rowDiagnostics,
       };
-    } catch {
+    } catch (error) {
+      const parserFailure = toParserFailure(error);
+      observation.diagnostics.parserFailure = parserFailure;
+      await runOptionalDiagnosticHook(hooks, "submit_diagnostics", hooks.onSubmitDiagnostics, observation.diagnostics);
       return {
         status: "page_structure_changed", rawTransactions: [], currentUrl: safeCurrentUrl,
         screenTransactionCount: 0, paginationDetected: null, pageCount: 1,
         submitted: executionState.submitted, submitDiagnostics: observation.diagnostics,
         rowDiagnostics: null,
+        parserFailure,
       };
     }
   }
@@ -203,7 +258,7 @@ export async function performLookup(
   if (located.status !== "success") {
     if (located.status === "empty") {
       const emptySnapshot = await captureSafeResultStructure(located.locator);
-      await hooks.onSafeResultSnapshot?.(emptySnapshot);
+      await runOptionalDiagnosticHook(hooks, "safe_result_snapshot", hooks.onSafeResultSnapshot, emptySnapshot);
     }
     return {
       status: located.status,
@@ -226,7 +281,7 @@ export async function performLookup(
     ? target.resultFrame.locator(KB_SELECTORS.resultComponent)
     : located.locator;
   const snapshot = await captureSafeResultStructure(resultComponent);
-  await hooks.onSafeResultSnapshot?.(snapshot);
+  await runOptionalDiagnosticHook(hooks, "safe_result_snapshot", hooks.onSafeResultSnapshot, snapshot);
   if (snapshot.transactionTableIndex === null || snapshot.screenTransactionCount === null || snapshot.paginationDetected) {
     return {
       status: "page_structure_changed",
@@ -260,6 +315,9 @@ export async function performLookup(
     };
   } catch (error) {
     if (error instanceof Error) {
+      const parserFailure = toParserFailure(error);
+      observation.diagnostics.parserFailure = parserFailure;
+      await runOptionalDiagnosticHook(hooks, "submit_diagnostics", hooks.onSubmitDiagnostics, observation.diagnostics);
       return {
         status: "page_structure_changed",
         rawTransactions: [],
@@ -270,6 +328,7 @@ export async function performLookup(
         submitted: executionState.submitted,
         submitDiagnostics: observation.diagnostics,
         rowDiagnostics: null,
+        parserFailure,
       };
     }
     throw error;

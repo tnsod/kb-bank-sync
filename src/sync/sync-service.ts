@@ -1,6 +1,7 @@
 import type { Logger } from "pino";
 
 import { runKbLookup, type KbLookupResult, type LookupHooks } from "../bank/kb-client.js";
+import type { ParserFailureDiagnostic } from "../bank/kb-errors.js";
 import type { CliOptions } from "../config/cli.js";
 import type { AppConfig, BankLookupConfig } from "../config/env.js";
 import type { GoogleApiCallCounts, SheetLayoutResult, SheetsClient } from "../spreadsheet/google-sheets-client.js";
@@ -72,6 +73,7 @@ export interface SyncSummary {
   evidenceNotesPreserved?: boolean;
   migrationVersion?: number;
   googleApiCalls: GoogleApiCallCounts;
+  parserFailure?: ParserFailureDiagnostic;
 }
 
 export interface SyncDependencies {
@@ -242,6 +244,9 @@ export async function runSync(config: AppConfig, cli: CliOptions, dependencies: 
       lookupStartDate: range.startDate, lookupEndDate: range.endDate, minimumAllowedDate: range.minimumAllowedDate,
       existingRowCount: state.rowCount, duplicateSourceKeyCount: state.duplicateSourceKeys.length,
       googleApiCalls: callCounts(dependencies.sheets),
+      ...(lookup.parserFailure === undefined || lookup.parserFailure === null
+        ? {}
+        : { parserFailure: lookup.parserFailure }),
     };
   }
 
