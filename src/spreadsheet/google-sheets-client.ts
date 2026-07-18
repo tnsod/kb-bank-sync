@@ -273,7 +273,7 @@ export class GoogleSheetsClient implements SheetsClient {
     try {
       const response = await this.api.spreadsheets.get({
         spreadsheetId: this.spreadsheetId,
-        fields: "sheets(properties(sheetId),basicFilter,bandedRanges(bandedRangeId,range),conditionalFormats(ranges,booleanRule(condition)))",
+        fields: "sheets(properties(sheetId,gridProperties(rowCount)),basicFilter,bandedRanges(bandedRangeId,range,rowProperties),conditionalFormats(ranges,booleanRule(condition,format(backgroundColorStyle))))",
       });
       sheet = response.data.sheets?.find((candidate) => candidate.properties?.sheetId === sheetId);
     } catch (error) {
@@ -281,35 +281,74 @@ export class GoogleSheetsClient implements SheetsClient {
     }
     if (sheet === undefined) throw new SyncError("SHEET_INITIALIZATION_FAILED", "서식 적용 대상 워크시트를 찾을 수 없습니다");
 
-    const userRange: sheets_v4.Schema$GridRange = { sheetId, startRowIndex: 0, startColumnIndex: 0, endColumnIndex: 9 };
+    const logicalRange: sheets_v4.Schema$GridRange = { sheetId, startRowIndex: 0, startColumnIndex: 0, endColumnIndex: 12 };
+    const filterRange: sheets_v4.Schema$GridRange = { sheetId, startRowIndex: 0, startColumnIndex: 0, endColumnIndex: 9 };
     const bodyRange = (startColumnIndex: number, endColumnIndex: number): sheets_v4.Schema$GridRange => ({
       sheetId, startRowIndex: 1, startColumnIndex, endColumnIndex,
     });
-    const sameUserRange = (range: sheets_v4.Schema$GridRange | null | undefined): boolean => range?.sheetId === sheetId
-      && (range.startRowIndex ?? 0) === 0 && (range.startColumnIndex ?? 0) === 0 && range.endColumnIndex === 9;
-    const bandingExists = sheet.bandedRanges?.some((banding) => sameUserRange(banding.range)) === true;
-    const conditionalValues = new Set<string>();
-    for (const rule of sheet.conditionalFormats ?? []) {
-      if (rule.ranges?.some((range) => range.sheetId === sheetId && (range.startRowIndex ?? 0) === 1
-        && range.startColumnIndex === 2 && range.endColumnIndex === 3) !== true) continue;
+    const colorMatches = (color: sheets_v4.Schema$Color | null | undefined,
+      expected: { red: number; green: number; blue: number }): boolean => color !== null && color !== undefined
+      && Math.abs((color.red ?? -1) - expected.red) < 0.01
+      && Math.abs((color.green ?? -1) - expected.green) < 0.01
+      && Math.abs((color.blue ?? -1) - expected.blue) < 0.01;
+    const headerColor = { red: 0.10, green: 0.32, blue: 0.20 };
+    const firstBandColor = { red: 1, green: 1, blue: 1 };
+    const secondBandColor = { red: 0.93, green: 0.97, blue: 0.94 };
+    const managedBandings = (sheet.bandedRanges ?? []).filter((banding) => banding.range?.sheetId === sheetId
+      && (banding.range.startRowIndex ?? 0) === 0 && (banding.range.startColumnIndex ?? 0) === 0
+      && (banding.range.endColumnIndex === 9 || banding.range.endColumnIndex === 12));
+    const managedBandingIsExact = managedBandings.length === 1 && managedBandings[0]?.range?.endColumnIndex === 12
+      && colorMatches(managedBandings[0]?.rowProperties?.headerColorStyle?.rgbColor, headerColor)
+      && colorMatches(managedBandings[0]?.rowProperties?.firstBandColorStyle?.rgbColor, firstBandColor)
+      && colorMatches(managedBandings[0]?.rowProperties?.secondBandColorStyle?.rgbColor, secondBandColor);
+    const conditionalFormats: Array<{ value: string; red: number; green: number; blue: number }> = [
+      { value: "입금", red: 0.82, green: 0.94, blue: 0.84 },
+      { value: "출금", red: 0.84, green: 0.90, blue: 0.98 },
+      { value: "기타", red: 0.90, green: 0.90, blue: 0.90 },
+    ];
+    const desiredConditionalRange = bodyRange(2, 3);
+    const managedValues = new Set(conditionalFormats.map((format) => format.value));
+    const currentConditionalFormats = sheet.conditionalFormats ?? [];
+    const managedConditionalRuleIndices = currentConditionalFormats.flatMap((rule, index) => {
       const value = rule.booleanRule?.condition?.values?.[0]?.userEnteredValue;
-      if (rule.booleanRule?.condition?.type === "TEXT_EQ" && value !== undefined && value !== null) conditionalValues.add(value);
-    }
+      return rule.booleanRule?.condition?.type === "TEXT_EQ" && value !== undefined && value !== null
+        && managedValues.has(value) ? [index] : [];
+    });
+    const rangeMatches = (range: sheets_v4.Schema$GridRange | null | undefined): boolean => range?.sheetId === sheetId
+      && (range.startRowIndex ?? 0) === 1
+      && (range.endRowIndex === undefined || range.endRowIndex === sheet.properties?.gridProperties?.rowCount)
+      && range.startColumnIndex === 2 && range.endColumnIndex === 3;
+    const managedConditionalRulesAreExact = managedConditionalRuleIndices.length === conditionalFormats.length
+      && conditionalFormats.every((expected) => currentConditionalFormats.some((rule) => {
+        const condition = rule.booleanRule?.condition;
+        const values = condition?.values ?? [];
+        const ranges = rule.ranges ?? [];
+        return condition?.type === "TEXT_EQ" && values.length === 1 && values[0]?.userEnteredValue === expected.value
+          && ranges.length === 1 && rangeMatches(ranges[0])
+          && colorMatches(rule.booleanRule?.format?.backgroundColorStyle?.rgbColor, expected);
+      }));
 
     const requests: sheets_v4.Schema$Request[] = [
       { updateSheetProperties: { properties: { sheetId, gridProperties: { frozenRowCount: 1 } }, fields: "gridProperties.frozenRowCount" } },
       { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 9, endIndex: 12 }, properties: { hiddenByUser: true }, fields: "hiddenByUser" } },
       { updateDimensionProperties: { range: { sheetId, dimension: "ROWS", startIndex: 0, endIndex: 1 }, properties: { pixelSize: 36 }, fields: "pixelSize" } },
       { repeatCell: { range: { sheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: 12 }, cell: { userEnteredFormat: {
-        backgroundColorStyle: { rgbColor: { red: 0.10, green: 0.32, blue: 0.20 } },
+        backgroundColorStyle: { rgbColor: headerColor },
         textFormat: { foregroundColorStyle: { rgbColor: { red: 1, green: 1, blue: 1 } }, bold: true },
         horizontalAlignment: "CENTER", verticalAlignment: "MIDDLE", wrapStrategy: "WRAP",
       } }, fields: "userEnteredFormat(backgroundColorStyle,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)" } },
-      { repeatCell: { range: bodyRange(0, 1), cell: { userEnteredFormat: { numberFormat: { type: "DATE_TIME", pattern: "yyyy.mm.dd hh:mm:ss" }, horizontalAlignment: "CENTER" } }, fields: "userEnteredFormat(numberFormat,horizontalAlignment)" } },
+      { repeatCell: { range: bodyRange(0, 12), cell: { userEnteredFormat: {
+        textFormat: { foregroundColorStyle: { rgbColor: { red: 0, green: 0, blue: 0 } },
+          bold: false, italic: false, strikethrough: false, underline: false }, verticalAlignment: "MIDDLE",
+      } }, fields: "userEnteredFormat(backgroundColorStyle,textFormat.foregroundColorStyle,textFormat.bold,textFormat.italic,textFormat.strikethrough,textFormat.underline,verticalAlignment)" } },
+      { repeatCell: { range: bodyRange(0, 1), cell: { userEnteredFormat: { numberFormat: { type: "DATE_TIME", pattern: "yyyy-MM-dd HH:mm:ss" }, horizontalAlignment: "CENTER" } }, fields: "userEnteredFormat(numberFormat,horizontalAlignment)" } },
       { repeatCell: { range: bodyRange(2, 3), cell: { userEnteredFormat: { horizontalAlignment: "CENTER" } }, fields: "userEnteredFormat.horizontalAlignment" } },
-      { repeatCell: { range: bodyRange(4, 6), cell: { userEnteredFormat: { numberFormat: { type: "NUMBER", pattern: "#,##0;[Red]-#,##0" }, horizontalAlignment: "RIGHT" } }, fields: "userEnteredFormat(numberFormat,horizontalAlignment)" } },
+      { repeatCell: { range: bodyRange(4, 6), cell: { userEnteredFormat: { numberFormat: { type: "NUMBER", pattern: "#,##0;-#,##0" }, horizontalAlignment: "RIGHT" } }, fields: "userEnteredFormat(numberFormat,horizontalAlignment)" } },
       { repeatCell: { range: bodyRange(6, 9), cell: { userEnteredFormat: { horizontalAlignment: "LEFT", wrapStrategy: "WRAP" } }, fields: "userEnteredFormat(horizontalAlignment,wrapStrategy)" } },
-      { setBasicFilter: { filter: { range: userRange } } },
+      { repeatCell: { range: bodyRange(9, 10), cell: { userEnteredFormat: { numberFormat: { type: "TEXT", pattern: "@" }, horizontalAlignment: "LEFT" } }, fields: "userEnteredFormat(numberFormat,horizontalAlignment)" } },
+      { repeatCell: { range: bodyRange(10, 11), cell: { userEnteredFormat: { numberFormat: { type: "TEXT", pattern: "@" }, horizontalAlignment: "CENTER" } }, fields: "userEnteredFormat(numberFormat,horizontalAlignment)" } },
+      { repeatCell: { range: bodyRange(11, 12), cell: { userEnteredFormat: { numberFormat: { type: "TEXT", pattern: "@" }, horizontalAlignment: "LEFT" } }, fields: "userEnteredFormat(numberFormat,horizontalAlignment)" } },
+      { setBasicFilter: { filter: { range: filterRange } } },
       { setDataValidation: { range: bodyRange(2, 3), rule: { condition: { type: "ONE_OF_LIST", values: [
         { userEnteredValue: "입금" }, { userEnteredValue: "출금" }, { userEnteredValue: "기타" },
       ] }, strict: true, showCustomUi: true } } },
@@ -318,28 +357,30 @@ export class GoogleSheetsClient implements SheetsClient {
     widths.forEach((pixelSize, index) => requests.push({ updateDimensionProperties: {
       range: { sheetId, dimension: "COLUMNS", startIndex: index, endIndex: index + 1 }, properties: { pixelSize }, fields: "pixelSize",
     } }));
-    if (!bandingExists) requests.push({ addBanding: { bandedRange: {
-      range: userRange,
-      rowProperties: {
-        headerColorStyle: { rgbColor: { red: 0.10, green: 0.32, blue: 0.20 } },
-        firstBandColorStyle: { rgbColor: { red: 1, green: 1, blue: 1 } },
-        secondBandColorStyle: { rgbColor: { red: 0.93, green: 0.97, blue: 0.94 } },
-      },
-    } } });
-    const conditionalFormats: Array<{ value: string; red: number; green: number; blue: number }> = [
-      { value: "입금", red: 0.82, green: 0.94, blue: 0.84 },
-      { value: "출금", red: 0.84, green: 0.90, blue: 0.98 },
-      { value: "기타", red: 0.90, green: 0.90, blue: 0.90 },
-    ];
-    let conditionalIndex = sheet.conditionalFormats?.length ?? 0;
-    for (const format of conditionalFormats) {
-      if (conditionalValues.has(format.value)) continue;
-      requests.push({ addConditionalFormatRule: { index: conditionalIndex, rule: {
-        ranges: [bodyRange(2, 3)],
-        booleanRule: { condition: { type: "TEXT_EQ", values: [{ userEnteredValue: format.value }] },
-          format: { backgroundColorStyle: { rgbColor: { red: format.red, green: format.green, blue: format.blue } } } },
-      } } });
-      conditionalIndex += 1;
+    if (!managedBandingIsExact) {
+      for (const banding of managedBandings) {
+        if (banding.bandedRangeId !== undefined && banding.bandedRangeId !== null) {
+          requests.push({ deleteBanding: { bandedRangeId: banding.bandedRangeId } });
+        }
+      }
+      requests.push({ addBanding: { bandedRange: { range: logicalRange, rowProperties: {
+        headerColorStyle: { rgbColor: headerColor }, firstBandColorStyle: { rgbColor: firstBandColor },
+        secondBandColorStyle: { rgbColor: secondBandColor },
+      } } } });
+    }
+    if (!managedConditionalRulesAreExact) {
+      for (const index of [...managedConditionalRuleIndices].sort((left, right) => right - left)) {
+        requests.push({ deleteConditionalFormatRule: { sheetId, index } });
+      }
+      let conditionalIndex = currentConditionalFormats.length - managedConditionalRuleIndices.length;
+      for (const format of conditionalFormats) {
+        requests.push({ addConditionalFormatRule: { index: conditionalIndex, rule: {
+          ranges: [desiredConditionalRange],
+          booleanRule: { condition: { type: "TEXT_EQ", values: [{ userEnteredValue: format.value }] },
+            format: { backgroundColorStyle: { rgbColor: { red: format.red, green: format.green, blue: format.blue } } } },
+        } } });
+        conditionalIndex += 1;
+      }
     }
     this.callCounts.batchUpdate += 1;
     try {
@@ -352,7 +393,7 @@ export class GoogleSheetsClient implements SheetsClient {
       frozenHeader: true,
       basicFilterApplied: true,
       bandingApplied: true,
-      conditionalFormatRuleCount: conditionalValues.size + conditionalFormats.filter((format) => !conditionalValues.has(format.value)).length,
+      conditionalFormatRuleCount: conditionalFormats.length,
       dataValidationApplied: true,
     };
   }
@@ -369,7 +410,7 @@ export class GoogleSheetsClient implements SheetsClient {
       spreadsheetId: this.spreadsheetId,
       range: `${quoteSheetName(this.sheetName)}!A:L`,
       valueInputOption: "RAW",
-      insertDataOption: "INSERT_ROWS",
+      insertDataOption: "OVERWRITE",
       requestBody: { values: transactions.map(transactionToSheetRow) },
     });
       const appendedRowCount = response.data.updates?.updatedRows ?? 0;
