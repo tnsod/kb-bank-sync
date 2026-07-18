@@ -17,3 +17,5 @@ secrets/
 *.private.json
 .sync.lock
 .sync-lock/
+*.key
+*.pub
