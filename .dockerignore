@@ -18,3 +18,5 @@ playwright-report
 output-keypad-public*.png
 .sync.lock
 .sync-lock
+*.key
+*.pub
