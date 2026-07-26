@@ -7,7 +7,13 @@ import {
   type ValidationStage,
 } from "../bank/kb-errors.js";
 import { accountIdFromNumber } from "../utils/masking.js";
-import { normalizeMoney, normalizeNullableText, normalizeOccurredAt, normalizeText } from "./normalize.js";
+import {
+  normalizeMoney,
+  normalizeNullableText,
+  normalizeOccurredAt,
+  normalizeText,
+  normalizeTransactionInstitution,
+} from "./normalize.js";
 import type { RawKbTransaction, TransactionWithoutSourceKey } from "./transaction.js";
 
 export interface TransactionValidationContext {
@@ -264,7 +270,7 @@ function normalizeTransactionCandidate(
       withdrawal,
       deposit,
       balance,
-      branch: normalizeNullableText(raw.branchText),
+      branch: normalizeNullableText(normalizeTransactionInstitution(raw.branchText)),
       collectedAt,
     },
   };

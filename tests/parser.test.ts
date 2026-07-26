@@ -72,7 +72,8 @@ describe("KB transaction parser", () => {
     expect(transactions[0]).toMatchObject({
       dateText: "2026.07.01",
       timeText: "14:30:00",
-      memoText: "테스트메모 테스트사용자",
+      memoText: "테스트사용자",
+      legacyMemoText: "테스트메모 테스트사용자",
       withdrawalText: "",
       depositText: "10000",
       branchText: "테스트지점",
@@ -130,6 +131,74 @@ describe("KB transaction parser", () => {
       depositCell: { cellIndex: 4, colspan: 1, rowspan: 1, inputCount: 0, spanCount: 0 },
       balanceCell: { cellIndex: 5, colspan: 1, rowspan: 1, inputCount: 0, spanCount: 0 },
     });
+  });
+
+  it("selects one ordinary nested td as counterparty and excludes td.tLeft", () => {
+    const html = `
+      <table class="tType01"><thead>
+        <tr><th>거래일시</th><th>적요</th><th>내통장표시내용</th><th>출금금액</th>
+          <th>입금금액</th><th>잔액</th><th>거래점</th><th>구분</th></tr>
+        <tr><th>의뢰인/수취인</th></tr>
+      </thead><tbody>
+        <tr><td>2026-07-01 14:30:00</td><td>가상입금</td><td>표시내용</td>
+          <td></td><td>10000</td><td>50000</td><td>청라</td><td>입금</td></tr>
+        <tr><td colspan="8"><table><tbody><tr>
+          <td class="tLeft">제외할 의뢰인</td>
+          <td>선택할 수취인</td>
+        </tr></tbody></table></td></tr>
+      </tbody></table>`;
+    const parsed = parseRawTransactionsWithDiagnostics(html, { expectedTransactionCount: 1 });
+    expect(parsed.transactions).toHaveLength(1);
+    expect(parsed.transactions[0]).toMatchObject({
+      memoText: "선택할 수취인",
+      legacyMemoText: "표시내용 제외할 의뢰인 선택할 수취인",
+      branchText: "청라",
+    });
+    expect(parsed.transactions[0]?.memoText).not.toMatch(/제외할 의뢰인|제외할 의뢰인\s+선택할 수취인/u);
+    expect(parsed.rowDiagnostics).toMatchObject({
+      totalBodyRowCount: 2,
+      mainTransactionRowCount: 1,
+      detailRowCount: 1,
+      matchedDetailRowCount: 1,
+      detailRowsMatchedToTransactions: true,
+      detailRowsFollowMain: true,
+    });
+    expect(parsed.rowDiagnostics.transactionStructures?.[0]?.selectedRowCellCount).toBe(8);
+    const normalized = normalizeAndValidateTransaction(
+      parsed.transactions[0]!,
+      "12345678901234",
+      "2026-07-01T15:00:00+09:00",
+      { lookupStartDate: "2026-07-01", lookupEndDate: "2026-07-01" },
+    );
+    expect(normalized).toMatchObject({
+      memo: "선택할 수취인",
+      branch: "국민은행",
+    });
+  });
+
+  it("rejects a detail row with multiple ordinary counterparty td candidates", () => {
+    const html = `
+      <table class="tType01"><thead>
+        <tr><th>거래일시</th><th>적요</th><th>내통장표시내용</th><th>출금금액</th>
+          <th>입금금액</th><th>잔액</th><th>거래점</th><th>구분</th></tr>
+        <tr><th>의뢰인/수취인</th></tr>
+      </thead><tbody>
+        <tr><td>2026-07-01 14:30:00</td><td>가상입금</td><td>표시내용</td>
+          <td></td><td>10000</td><td>50000</td><td>청라</td><td>입금</td></tr>
+        <tr><td colspan="8"><table><tbody><tr>
+          <td class="tLeft">제외 셀</td><td>후보 A</td><td>후보 B</td>
+        </tr></tbody></table></td></tr>
+      </tbody></table>`;
+    try {
+      parseRawTransactionsWithDiagnostics(html, { expectedTransactionCount: 1 });
+      expect.fail("Expected an unknown detail row error");
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: "TRANSACTION_PARSE_ERROR",
+        parserErrorCode: "UNKNOWN_DETAIL_ROW",
+        parserStage: "row_classification",
+      });
+    }
   });
 
   it("records nested amount elements and a shifted logical column without exposing cell text", () => {

@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { normalizeMoney, normalizeNullableText, normalizeOccurredAt, normalizeText } from "../src/transaction/normalize.js";
+import {
+  normalizeMoney,
+  normalizeNullableText,
+  normalizeOccurredAt,
+  normalizeText,
+  normalizeTransactionInstitution,
+} from "../src/transaction/normalize.js";
 import {
   INFORMATIONAL_ROW_REASON,
   normalizeAndClassifyTransaction,
@@ -42,6 +48,18 @@ describe("text normalization", () => {
 
   it("normalizes empty optional values to null", () => {
     expect(normalizeNullableText(" \t ")).toBeNull();
+  });
+
+  it.each([
+    ["청라", "국민은행"],
+    [" 청라 ", "국민은행"],
+    ["청라 ", "국민은행"],
+    [" 청라", "국민은행"],
+    ["신한은행", "신한은행"],
+    ["", ""],
+    ["청라점", "청라점"],
+  ])("normalizes transaction institution %j to %j", (input, expected) => {
+    expect(normalizeTransactionInstitution(input)).toBe(expected);
   });
 });
 

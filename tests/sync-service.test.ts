@@ -6,7 +6,8 @@ import { normalizeAndValidateTransaction } from "../src/transaction/validate.js"
 import { TransactionValidationError } from "../src/bank/kb-errors.js";
 import { runSync } from "../src/sync/sync-service.js";
 import { transactionToSheetRow } from "../src/spreadsheet/sheet-mapper.js";
-import type { Transaction } from "../src/transaction/transaction.js";
+import { normalizeNullableText } from "../src/transaction/normalize.js";
+import type { RawKbTransaction, Transaction } from "../src/transaction/transaction.js";
 import { defaultCli, rawTransaction, sheetClient, stage2Config, successfulLookup } from "./stage2-helpers.js";
 
 const now = "2026-07-16T00:00:00+09:00";
@@ -22,6 +23,21 @@ function transactionKey(): string {
     rawTransaction, stage2Config.KB_ACCOUNT_NUMBER, collectedAt,
     { lookupStartDate: "2026-01-16", lookupEndDate: "2026-07-16" },
   )).sourceKey;
+}
+
+function compatibilityKeys(raw: RawKbTransaction): { legacy: string; current: string } {
+  const transaction = normalizeAndValidateTransaction(
+    raw, stage2Config.KB_ACCOUNT_NUMBER, collectedAt,
+    { lookupStartDate: "2026-01-16", lookupEndDate: "2026-07-16" },
+  );
+  return {
+    current: fingerprintTransaction(transaction).sourceKey,
+    legacy: fingerprintTransaction({
+      ...transaction,
+      memo: normalizeNullableText(raw.legacyMemoText ?? raw.memoText),
+      branch: normalizeNullableText(raw.branchText),
+    }).sourceKey,
+  };
 }
 
 describe("sync service", () => {
@@ -208,6 +224,84 @@ describe("sync service", () => {
     });
     expect(summary).toMatchObject({ status: "no_new_transactions", existingTransactionCount: 1, newTransactionCount: 0 });
     expect(appendTransactions).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { name: "legacy sourceKey", existingKey: (keys: { legacy: string; current: string }) => keys.legacy },
+    { name: "new sourceKey", existingKey: (keys: { legacy: string; current: string }) => keys.current },
+  ])("does not append a normalized transaction when only the $name exists", async ({ existingKey }) => {
+    const compatibilityRaw = {
+      ...rawTransaction,
+      branchText: " 청라 ",
+      memoText: "선택할 수취인",
+      legacyMemoText: "제외할 의뢰인 선택할 수취인",
+    };
+    const keys = compatibilityKeys(compatibilityRaw);
+    expect(keys.current).not.toBe(keys.legacy);
+    const appendTransactions = vi.fn();
+    const summary = await runSync(
+      { ...stage2Config, DRY_RUN: false, ENABLE_SHEETS_WRITE: true },
+      defaultCli,
+      {
+        sheets: sheetClient({
+          readDataRows: vi.fn().mockResolvedValue([existingRow(existingKey(keys))]),
+          appendTransactions,
+        }),
+        lookup: vi.fn().mockResolvedValue(successfulLookup([compatibilityRaw])),
+        now,
+        collectedAt: () => collectedAt,
+      },
+    );
+    expect(summary).toMatchObject({
+      status: "no_new_transactions",
+      existingTransactionCount: 1,
+      newTransactionCount: 0,
+      insertedCount: 0,
+      appendCalled: false,
+    });
+    expect(appendTransactions).not.toHaveBeenCalled();
+  });
+
+  it("appends one normalized row with the new sourceKey when neither compatible key exists", async () => {
+    const compatibilityRaw = {
+      ...rawTransaction,
+      branchText: "청라",
+      memoText: "선택할 수취인",
+      legacyMemoText: "제외할 의뢰인 선택할 수취인",
+    };
+    const keys = compatibilityKeys(compatibilityRaw);
+    const appendTransactions = vi.fn().mockResolvedValue({
+      appendedRowCount: 1,
+      updatedRange: "거래내역!A2:L2",
+    });
+    const summary = await runSync(
+      { ...stage2Config, DRY_RUN: false, ENABLE_SHEETS_WRITE: true },
+      defaultCli,
+      {
+        sheets: sheetClient({ appendTransactions }),
+        lookup: vi.fn().mockResolvedValue(successfulLookup([compatibilityRaw, compatibilityRaw])),
+        now,
+        collectedAt: () => collectedAt,
+      },
+    );
+    expect(summary).toMatchObject({
+      status: "success",
+      uniqueScrapedCount: 1,
+      internalDuplicateCount: 1,
+      existingTransactionCount: 0,
+      newTransactionCount: 1,
+      insertedCount: 1,
+      appendCalled: true,
+    });
+    expect(appendTransactions).toHaveBeenCalledOnce();
+    const appended = appendTransactions.mock.calls[0]?.[0] as readonly Transaction[] | undefined;
+    expect(appended).toHaveLength(1);
+    expect(appended?.[0]).toMatchObject({
+      branch: "국민은행",
+      memo: "선택할 수취인",
+      sourceKey: keys.current,
+    });
+    expect(appended?.[0]?.sourceKey).not.toBe(keys.legacy);
   });
 
   it("appends multiple new transactions once and removes internal duplicates", async () => {

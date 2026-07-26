@@ -8,6 +8,7 @@ export interface RawKbTransaction {
   depositText: string;
   balanceText: string;
   branchText: string;
+  legacyMemoText?: string;
 }
 
 export interface Transaction {

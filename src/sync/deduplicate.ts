@@ -29,11 +29,16 @@ export function deduplicateTransactions(transactions: readonly Transaction[]): D
 export function selectNewTransactions(
   transactions: readonly Transaction[],
   existingSourceKeys: ReadonlySet<string>,
+  legacySourceKeysBySourceKey: ReadonlyMap<string, ReadonlySet<string>> = new Map(),
 ): { transactions: Transaction[]; existingTransactionCount: number } {
   const indexed = transactions.map((transaction, index) => ({ transaction, index }));
-  const existingTransactionCount = indexed.filter(({ transaction }) => existingSourceKeys.has(transaction.sourceKey)).length;
+  const isExisting = (transaction: Transaction): boolean =>
+    existingSourceKeys.has(transaction.sourceKey) ||
+    [...(legacySourceKeysBySourceKey.get(transaction.sourceKey) ?? [])]
+      .some((legacySourceKey) => existingSourceKeys.has(legacySourceKey));
+  const existingTransactionCount = indexed.filter(({ transaction }) => isExisting(transaction)).length;
   const fresh = indexed
-    .filter(({ transaction }) => !existingSourceKeys.has(transaction.sourceKey))
+    .filter(({ transaction }) => !isExisting(transaction))
     .sort((left, right) => left.transaction.occurredAt.localeCompare(right.transaction.occurredAt) || left.index - right.index)
     .map(({ transaction }) => transaction);
   return { transactions: fresh, existingTransactionCount };

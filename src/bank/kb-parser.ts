@@ -440,8 +440,32 @@ function transactionRowStructure(
   };
 }
 
-function appendDetailText(raw: RawKbTransaction, value: string): void {
-  raw.memoText = normalizeText([raw.memoText, value].filter((part) => normalizeText(part) !== "").join(" "));
+function setDetailCounterpartyText(raw: RawKbTransaction, value: string, legacyValue: string): void {
+  const previousLegacyText = raw.legacyMemoText ?? raw.memoText;
+  raw.memoText = normalizeText(value);
+  raw.legacyMemoText = normalizeText(
+    [previousLegacyText, legacyValue].filter((part) => normalizeText(part) !== "").join(" "),
+  );
+}
+
+function detailCounterpartyText(
+  detailCell: HTMLElement,
+  diagnostics: ParserStructureDiagnostics,
+  transactions: readonly RawKbTransaction[],
+): string {
+  const nestedCells = detailCell.querySelectorAll("td");
+  if (nestedCells.length === 0) return normalizeText(detailCell.text);
+  const counterpartyCells = nestedCells.filter((cell) => !cell.classList.contains("tLeft"));
+  if (counterpartyCells.length !== 1) {
+    throw parserError(
+      "상세 행의 거래처 셀을 하나로 확정할 수 없습니다",
+      "UNKNOWN_DETAIL_ROW",
+      "row_classification",
+      diagnostics,
+      transactions,
+    );
+  }
+  return normalizeText(counterpartyCells[0]?.text ?? "");
 }
 
 function classifyDetailRow(
@@ -461,7 +485,10 @@ function classifyDetailRow(
     ? directHeaderText
     : (secondaryHeaderText || directHeaderText);
   const headerText = normalizeText([directHeaderText, secondaryHeaderText].join(" "));
-  const value = normalizeText(cells[0]?.text ?? "");
+  const detailCell = cells[0];
+  if (detailCell === undefined) return null;
+  const legacyValue = normalizeText(detailCell.text);
+  const value = detailCounterpartyText(detailCell, diagnostics, transactions);
   const colspan = Number.parseInt(cells[0]?.getAttribute("colspan") ?? "0", 10);
   const logicalColumnCount = directHeaders.length + (Number.isFinite(colspan) ? colspan : 0);
   const colspanValidated = logicalColumnCount === headerCount || colspan === headerCount;
@@ -472,21 +499,21 @@ function classifyDetailRow(
   }
   if (value === "") return { role: "empty", family: "neutral", colspanValidated };
   if (/(?:메모|통장표시)/u.test(roleHeaderText)) {
-    appendDetailText(previous, value);
+    setDetailCounterpartyText(previous, value, legacyValue);
     return { role: "transaction_memo", family: "neutral", colspanValidated };
   }
   const senderSide = /(?:의뢰인|보낸분|보내는분|송금인)/u.test(roleHeaderText);
   const receiverSide = /(?:수취인|받는분|받으실분)/u.test(roleHeaderText);
   if (senderSide && !receiverSide) {
-    appendDetailText(previous, value);
+    setDetailCounterpartyText(previous, value, legacyValue);
     return { role: "sender_description", family: "sender_side", colspanValidated };
   }
   if (receiverSide && !senderSide) {
-    appendDetailText(previous, value);
+    setDetailCounterpartyText(previous, value, legacyValue);
     return { role: "receiver_description", family: "receiver_side", colspanValidated };
   }
   if (senderSide && receiverSide) {
-    appendDetailText(previous, value);
+    setDetailCounterpartyText(previous, value, legacyValue);
     return { role: "additional_description", family: "neutral", colspanValidated };
   }
   if ([previous.descriptionText, previous.memoText].some((text) => normalizeText(text) === value)) {
@@ -520,10 +547,10 @@ function parseTable(table: HTMLElement, context: ParserTableContext): ParsedTabl
   const hasRequiredColumns = hasRequiredHeaders(headers);
   if (!hasRequiredColumns) return null;
 
-  const bodyRows = table.querySelectorAll("tbody tr");
+  const bodyRows = table.querySelectorAll("tbody tr").filter((row) => row.closest("table") === table);
   const candidateRows = (bodyRows.length > 0
     ? bodyRows
-    : table.querySelectorAll("tr").filter((row) => row !== headerRow))
+    : table.querySelectorAll("tr").filter((row) => row !== headerRow && row.closest("table") === table))
     .filter((row) => row !== headerRow && !isHiddenOrTemplateRow(row) && !isExplicitEmpty(row.text));
   const rowCellCounts = candidateRows.map((row) => row.querySelectorAll(":scope > td").length);
   const diagnostics = emptyParserDiagnostics({

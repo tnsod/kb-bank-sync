@@ -30,6 +30,11 @@ export function normalizeNullableText(value: string | null | undefined): string 
   return normalized === "" ? null : normalized;
 }
 
+export function normalizeTransactionInstitution(value: string): string {
+  const normalized = normalizeText(value);
+  return normalized === "청라" ? "국민은행" : normalized;
+}
+
 export function normalizeMoney(value: string, options: { nullable?: boolean } = {}): number | null {
   const normalized = normalizeText(value);
   if (normalized === "" || normalized === "-") {

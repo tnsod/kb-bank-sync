@@ -11,7 +11,7 @@ import { headersAreExact, headersAreLegacy, buildExistingSheetState } from "../s
 import { initializeSheet, type SheetInitializationResult } from "../spreadsheet/sheet-initializer.js";
 import { assertSheetsWriteAllowed, type SheetsWriteGuard } from "../spreadsheet/write-guard.js";
 import { fingerprintTransaction } from "../transaction/fingerprint.js";
-import { nowInKorea } from "../transaction/normalize.js";
+import { normalizeNullableText, nowInKorea } from "../transaction/normalize.js";
 import { normalizeAndClassifyTransaction } from "../transaction/validate.js";
 import type { TransactionWithoutSourceKey } from "../transaction/transaction.js";
 import { buildValidationStructureContext } from "../transaction/safe-diagnostics.js";
@@ -275,6 +275,7 @@ export async function runSync(config: AppConfig, cli: CliOptions, dependencies: 
 
   const collectedAt = dependencies.collectedAt?.() ?? nowInKorea();
   const normalized: TransactionWithoutSourceKey[] = [];
+  const legacyNormalized: TransactionWithoutSourceKey[] = [];
   let skippedInformationalRowCount = 0;
   for (let transactionIndex = 0; transactionIndex < lookup.rawTransactions.length; transactionIndex += 1) {
     const raw = lookup.rawTransactions[transactionIndex];
@@ -296,6 +297,11 @@ export async function runSync(config: AppConfig, cli: CliOptions, dependencies: 
         }, "Informational row skipped");
       } else {
         normalized.push(result.transaction);
+        legacyNormalized.push({
+          ...result.transaction,
+          memo: normalizeNullableText(raw.legacyMemoText ?? raw.memoText),
+          branch: normalizeNullableText(raw.branchText),
+        });
       }
     } catch (error) {
       if (error instanceof TransactionValidationError) {
@@ -312,8 +318,23 @@ export async function runSync(config: AppConfig, cli: CliOptions, dependencies: 
     throw new SyncError("SHEET_DATA_INVALID", "파싱 건수와 정규화 건수가 일치하지 않습니다");
   }
   const fingerprinted = normalized.map(fingerprintTransaction);
+  if (legacyNormalized.length !== fingerprinted.length) {
+    throw new SyncError("SHEET_DATA_INVALID", "sourceKey 호환 거래 건수가 정규화 거래 건수와 일치하지 않습니다");
+  }
+  const legacySourceKeysBySourceKey = new Map<string, Set<string>>();
+  for (let index = 0; index < normalized.length; index += 1) {
+    const transaction = legacyNormalized[index];
+    const fingerprintedTransaction = fingerprinted[index];
+    if (transaction === undefined || fingerprintedTransaction === undefined) {
+      throw new SyncError("SHEET_DATA_INVALID", "sourceKey 호환 거래를 계산할 수 없습니다");
+    }
+    const legacySourceKey = fingerprintTransaction(transaction).sourceKey;
+    const aliases = legacySourceKeysBySourceKey.get(fingerprintedTransaction.sourceKey) ?? new Set<string>();
+    aliases.add(legacySourceKey);
+    legacySourceKeysBySourceKey.set(fingerprintedTransaction.sourceKey, aliases);
+  }
   const deduplicated = deduplicateTransactions(fingerprinted);
-  const fresh = selectNewTransactions(deduplicated.transactions, state.sourceKeys);
+  const fresh = selectNewTransactions(deduplicated.transactions, state.sourceKeys, legacySourceKeysBySourceKey);
   const base: SyncSummary = {
     status: dryRun ? "dry_run" : "success",
     lookupStartDate: range.startDate, lookupEndDate: range.endDate, minimumAllowedDate: range.minimumAllowedDate,
