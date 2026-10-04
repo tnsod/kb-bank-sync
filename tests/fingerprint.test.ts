@@ -11,6 +11,15 @@ const transaction: TransactionWithoutSourceKey = {
 };
 
 describe("transaction sourceKey", () => {
+  it("distinguishes second, direction, type, description and institution changes", () => {
+    const key = fingerprintTransaction(transaction).sourceKey;
+    for (const changed of [
+      { occurredAt: "2026-07-15T14:30:01+09:00" }, { deposit: 0, withdrawal: 1000 },
+      { transactionType: "출금" }, { description: "다른 적요" }, { branch: "다른 기관" },
+    ]) expect(fingerprintTransaction({ ...transaction, ...changed }).sourceKey).not.toBe(key);
+    expect(fingerprintTransaction({ ...transaction, branch: null }).sourceKey)
+      .toBe(fingerprintTransaction({ ...transaction, branch: "" }).sourceKey);
+  });
   it("is stable across collection times and equivalent whitespace", () => {
     const first = fingerprintTransaction(transaction).sourceKey;
     expect(fingerprintTransaction({ ...transaction, collectedAt: "2026-07-16T02:00:00+09:00" }).sourceKey).toBe(first);

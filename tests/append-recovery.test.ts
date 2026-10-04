@@ -29,6 +29,14 @@ function rows(keys: string[]) {
 const uncertain = Object.assign(new Error("response lost"), { code: 503 });
 
 describe("uncertain append recovery", () => {
+  it("does not retry against newly unverified missing sourceKeys", async () => {
+    const appendTransactions = vi.fn().mockRejectedValueOnce(uncertain);
+    const current = rows(["key-1"]); current[0]![11] = "";
+    const readDataRows = vi.fn().mockResolvedValue(current);
+    await expect(appendWithRecovery(sheetClient({ appendTransactions, readDataRows }), transactions, guard, "KB-1234"))
+      .rejects.toMatchObject({ code: "SHEET_DATA_INVALID" });
+    expect(appendTransactions).toHaveBeenCalledOnce();
+  });
   it("does not retry when all rows were actually stored", async () => {
     const appendTransactions = vi.fn().mockRejectedValueOnce(uncertain);
     const readDataRows = vi.fn().mockResolvedValue(rows(["key-1", "key-2"]));

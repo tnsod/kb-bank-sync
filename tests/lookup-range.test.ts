@@ -5,6 +5,12 @@ import { calculateLookupRange } from "../src/sync/lookup-range.js";
 const base = { latestOccurredAt: null, overlapDays: 3, initialLookbackMonths: 6, now: "2026-07-16T00:00:00+09:00" } as const;
 
 describe("KST lookup range", () => {
+  it("rejects future Sheet dates even inside the overlap window or with explicit CLI dates", () => {
+    for (const latestOccurredAt of ["2026-07-17T00:00:00+09:00", "2026-07-16T00:00:01+09:00"]) {
+      expect(() => calculateLookupRange({ ...base, latestOccurredAt })).toThrow(/미래/u);
+      expect(() => calculateLookupRange({ ...base, latestOccurredAt, from: "2026-07-01" })).toThrow(/미래/u);
+    }
+  });
   it("uses execution-day KST for the six-month lower bound", () => {
     expect(calculateLookupRange(base)).toEqual({
       startDate: "2026-01-16", endDate: "2026-07-16", minimumAllowedDate: "2026-01-16", todayKst: "2026-07-16",

@@ -42,6 +42,7 @@ export function calculateLookupRange(options: LookupRangeOptions): LookupRange {
   if (options.latestOccurredAt !== null) {
     const latest = dayjs(options.latestOccurredAt);
     if (!latest.isValid()) throw new ConfigurationError("시트 최신 거래일이 유효하지 않습니다");
+    if (latest.isAfter(now)) throw new ConfigurationError("시트 최신 거래일은 실행 시각보다 미래일 수 없습니다");
     const requested = parseDate(latest.tz("Asia/Seoul").format("YYYY-MM-DD"), "최신 거래일")
       .subtract(options.overlapDays, "day");
     calculatedStart = requested.isBefore(minimum, "day") ? minimum : requested;

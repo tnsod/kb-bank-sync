@@ -1,6 +1,7 @@
 import dayjs from "dayjs";
 
 import { EXPECTED_HEADERS, LEGACY_HEADERS, sheetsSerialToOccurredAt, type SheetCell } from "./sheet-mapper.js";
+import { validateVerifiedLegacyRecords } from "./verified-legacy.js";
 
 const ISO_OCCURRED_AT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?(?:Z|[+-]\d{2}:\d{2})$/u;
 
@@ -11,6 +12,7 @@ export interface ExistingSheetState {
   duplicateSourceKeys: string[];
   invalidDateRowCount: number;
   missingSourceKeyRowCount: number;
+  verifiedLegacyRowCount: number;
   shortRowCount: number;
   differentAccountIdRowCount: number;
   dataAfterEmptyRowCount: number;
@@ -34,7 +36,10 @@ function occurredAtFromCell(cell: SheetCell | null | undefined): string | null {
   return ISO_OCCURRED_AT.test(value) && dayjs(value).isValid() ? value : null;
 }
 
-export function buildExistingSheetState(rows: readonly RawSheetRow[], expectedAccountId: string): ExistingSheetState {
+export function buildExistingSheetState(
+  rows: readonly RawSheetRow[], expectedAccountId: string, verifiedLegacyMetadata: readonly string[] = [],
+): ExistingSheetState {
+  const verified = validateVerifiedLegacyRecords(rows, expectedAccountId, verifiedLegacyMetadata);
   const sourceKeys = new Set<string>();
   const duplicateSourceKeys = new Set<string>();
   const invalidDateRows: ExistingSheetState["invalidDateRows"] = [];
@@ -55,18 +60,23 @@ export function buildExistingSheetState(rows: readonly RawSheetRow[], expectedAc
     }
     rowCount += 1;
     if (emptyRowSeen) dataAfterEmptyRowCount += 1;
-    if (row.length < EXPECTED_HEADERS.length) shortRowCount += 1;
+    if (row.length < EXPECTED_HEADERS.length && !verified.has(index)) shortRowCount += 1;
     const occurredAt = occurredAtFromCell(row[0]);
     const parsed = occurredAt === null ? null : dayjs(occurredAt);
     if (occurredAt === null || parsed === null || !parsed.isValid()) invalidDateRows.push({ rowNumber, errorType: "invalid_occurred_at" });
     else if (latestOccurredAt === null || parsed.valueOf() > dayjs(latestOccurredAt).valueOf()) latestOccurredAt = occurredAt;
 
     const accountId = String(row[9] ?? "").trim();
-    if (accountId !== expectedAccountId) differentAccountIdRowCount += 1;
+    if (accountId !== expectedAccountId && !verified.has(index)) differentAccountIdRowCount += 1;
     const sourceKey = String(row[11] ?? "").trim();
     if (sourceKey === "") missingSourceKeyRowCount += 1;
     else if (sourceKeys.has(sourceKey)) duplicateSourceKeys.add(sourceKey);
     else sourceKeys.add(sourceKey);
+    const legacy = verified.get(index);
+    if (legacy !== undefined) {
+      sourceKeys.add(legacy.sourceKey);
+      sourceKeys.add(legacy.legacySourceKey);
+    }
   });
 
   return {
@@ -76,6 +86,7 @@ export function buildExistingSheetState(rows: readonly RawSheetRow[], expectedAc
     duplicateSourceKeys: [...duplicateSourceKeys],
     invalidDateRowCount: invalidDateRows.length,
     missingSourceKeyRowCount,
+    verifiedLegacyRowCount: verified.size,
     shortRowCount,
     differentAccountIdRowCount,
     dataAfterEmptyRowCount,

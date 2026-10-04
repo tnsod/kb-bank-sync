@@ -6,6 +6,11 @@ export default tseslint.config(
   eslint.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,
   {
+    ...tseslint.configs.disableTypeChecked,
+    files: ["scripts/*.mjs"],
+    languageOptions: { globals: { process: "readonly" } },
+  },
+  {
     files: ["**/*.ts"],
     languageOptions: {
       parserOptions: {

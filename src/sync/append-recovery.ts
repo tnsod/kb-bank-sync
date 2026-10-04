@@ -2,6 +2,7 @@ import type { Transaction } from "../transaction/transaction.js";
 import type { AppendResult, SheetsClient } from "../spreadsheet/google-sheets-client.js";
 import { isGoogleAuthenticationError, isUncertainAppendError } from "../spreadsheet/google-sheets-client.js";
 import { buildExistingSheetState } from "../spreadsheet/sheet-state.js";
+import { VERIFIED_LEGACY_METADATA_KEY } from "../spreadsheet/verified-legacy.js";
 import type { SheetsWriteGuard } from "../spreadsheet/write-guard.js";
 import { SyncError } from "./sync-errors.js";
 
@@ -11,7 +12,15 @@ export interface AppendRecoveryResult extends AppendResult {
 }
 
 async function readPresentKeys(client: SheetsClient, accountId: string): Promise<Set<string>> {
-  return buildExistingSheetState(await client.readDataRows("source_key_verification"), accountId).sourceKeys;
+  const rows = await client.readDataRows("source_key_verification");
+  const info = await client.getWorksheetInfo();
+  const metadata = info.sheetId === null ? [] : await client.readSheetDeveloperMetadata(VERIFIED_LEGACY_METADATA_KEY, info.sheetId);
+  const state = buildExistingSheetState(rows, accountId, metadata.map((entry) => entry.value));
+  if (state.missingSourceKeyRowCount !== state.verifiedLegacyRowCount || state.invalidDateRowCount > 0 ||
+    state.shortRowCount > 0 || state.differentAccountIdRowCount > 0 || state.dataAfterEmptyRowCount > 0) {
+    throw new SyncError("SHEET_DATA_INVALID", "append 복구 재조회에서 시트 무결성 검증에 실패했습니다");
+  }
+  return state.sourceKeys;
 }
 
 export async function appendWithRecovery(

@@ -279,6 +279,7 @@ CI는 Node.js 22에서 Ubuntu·Windows·macOS matrix로 `npm run check`를 실�
 - `Docker Desktop is not running`: 데스크톱 앱과 `docker info`를 확인한다.
 - 서비스 계정 오류: 직접 실행은 호스트 경로, 컨테이너는 `/run/secrets/google-service-account.json`인지 구분한다.
 - 헤더 불일치: 실제 워크시트 탭 이름과 A:L 헤더를 확인하고 자동 수정하지 않는다.
+- sourceKey 누락 또는 pagination: [검증된 legacy 복구 절차](docs/verified-legacy-recovery.md)를 따른다. 누락된 J:L을 추측해 채우지 않으며, pagination은 날짜 구간 분할 후 기존 parser로 검증한다.
 - Linux timer 오류: systemd status, journal, Docker 그룹 권한과 `/opt/kb-bank-sync` 경로를 확인한다.
 - macOS 예약 누락: 로그인·Docker Desktop·잠자기·LaunchAgent 상태를 확인한다.
 - Windows 예약 누락: 사용자 로그인 세션, Docker Desktop, 작업 기록을 확인한다.

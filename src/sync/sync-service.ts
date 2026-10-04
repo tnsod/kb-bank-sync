@@ -8,6 +8,7 @@ import type { GoogleApiCallCounts, SheetLayoutResult, SheetsClient } from "../sp
 import { migrateCounterpartyDescription } from "../spreadsheet/counterparty-description-migrator.js";
 import { migrateSheetLayout } from "../spreadsheet/sheet-migrator.js";
 import { headersAreExact, headersAreLegacy, buildExistingSheetState } from "../spreadsheet/sheet-state.js";
+import { VERIFIED_LEGACY_METADATA_KEY, sheetIdentitySnapshot } from "../spreadsheet/verified-legacy.js";
 import { initializeSheet, type SheetInitializationResult } from "../spreadsheet/sheet-initializer.js";
 import { assertSheetsWriteAllowed, type SheetsWriteGuard } from "../spreadsheet/write-guard.js";
 import { fingerprintTransaction } from "../transaction/fingerprint.js";
@@ -19,6 +20,7 @@ import { accountIdFromNumber } from "../utils/masking.js";
 import { appendWithRecovery } from "./append-recovery.js";
 import { deduplicateTransactions, selectNewTransactions } from "./deduplicate.js";
 import { calculateLookupRange } from "./lookup-range.js";
+import { runPartitionedLookup } from "./partitioned-lookup.js";
 import { SyncError } from "./sync-errors.js";
 
 export type SyncRunStatus =
@@ -65,6 +67,7 @@ export interface SyncSummary {
   duplicateSourceKeyCount: number;
   invalidDateRowCount: number;
   missingSourceKeyRowCount: number;
+  verifiedLegacyRowCount?: number;
   worksheetCreated?: boolean;
   headerCreated?: boolean;
   layout?: SheetLayoutResult | null;
@@ -226,11 +229,15 @@ export async function runSync(config: AppConfig, cli: CliOptions, dependencies: 
   if (headersAreLegacy(headers)) throw new SyncError("SHEET_LAYOUT_MIGRATION_REQUIRED", "구형 시트 레이아웃입니다. --migrate-sheet-layout을 실행하십시오");
   if (!headersAreExact(headers)) throw new SyncError("SHEET_HEADER_MISMATCH", "시트 헤더가 예상 값과 정확히 일치하지 않습니다");
 
-  const state = buildExistingSheetState(await dependencies.sheets.readDataRows(), accountId);
+  const rows = await dependencies.sheets.readDataRows();
+  const legacyMetadata = info.sheetId === null ? [] : await dependencies.sheets.readSheetDeveloperMetadata(
+    VERIFIED_LEGACY_METADATA_KEY, info.sheetId,
+  );
+  const state = buildExistingSheetState(rows, accountId, legacyMetadata.map((entry) => entry.value));
   if (state.duplicateSourceKeys.length > 0) {
     dependencies.logger?.warn({ duplicateSourceKeyCount: state.duplicateSourceKeys.length }, "Existing duplicate sourceKeys detected");
   }
-  if (state.missingSourceKeyRowCount > 0) {
+  if (state.missingSourceKeyRowCount > state.verifiedLegacyRowCount) {
     dependencies.logger?.error({ missingSourceKeyRowCount: state.missingSourceKeyRowCount }, "Sheet data migration required");
     throw new SyncError("SHEET_DATA_REQUIRES_MIGRATION", "sourceKey가 없는 기존 거래가 있어 실제 append를 차단합니다");
   }
@@ -260,8 +267,10 @@ export async function runSync(config: AppConfig, cli: CliOptions, dependencies: 
     KB_LOOKUP_START_DATE: range.startDate,
     KB_LOOKUP_END_DATE: range.endDate,
   };
-  const lookup = await (dependencies.lookup ?? runKbLookup)(bankConfig, dependencies.hooks);
-  if (lookup.status !== "success" && lookup.status !== "empty") {
+  const partitions = await runPartitionedLookup(bankConfig, dependencies.lookup ?? runKbLookup, dependencies.hooks, dependencies.logger);
+  const failed = partitions.find((partition) => !["success", "empty"].includes(partition.result.status));
+  if (failed !== undefined) {
+    const lookup = failed.result;
     return {
       ...emptySummary(mapLookupFailure(lookup.status), config.ENABLE_SHEETS_WRITE, startedAt),
       lookupStartDate: range.startDate, lookupEndDate: range.endDate, minimumAllowedDate: range.minimumAllowedDate,
@@ -277,15 +286,18 @@ export async function runSync(config: AppConfig, cli: CliOptions, dependencies: 
   const normalized: TransactionWithoutSourceKey[] = [];
   const legacyNormalized: TransactionWithoutSourceKey[] = [];
   let skippedInformationalRowCount = 0;
-  for (let transactionIndex = 0; transactionIndex < lookup.rawTransactions.length; transactionIndex += 1) {
-    const raw = lookup.rawTransactions[transactionIndex];
-    if (raw === undefined) continue;
+  const inputs = partitions.flatMap((partition) => partition.result.rawTransactions.map((raw, index) => ({ raw, index, partition })));
+  for (let transactionIndex = 0; transactionIndex < inputs.length; transactionIndex += 1) {
+    const input = inputs[transactionIndex];
+    if (input === undefined) continue;
+    const raw = input.raw;
+    const lookup = input.partition.result;
     try {
       const result = normalizeAndClassifyTransaction(
         raw, config.KB_ACCOUNT_NUMBER, collectedAt,
         {
-          validationContext: { lookupStartDate: range.startDate, lookupEndDate: range.endDate },
-          informationalRowStructureValidated: hasValidatedInformationalRowStructure(lookup, transactionIndex),
+          validationContext: { lookupStartDate: input.partition.startDate, lookupEndDate: input.partition.endDate },
+          informationalRowStructureValidated: hasValidatedInformationalRowStructure(lookup, input.index),
         },
       );
       if (result.kind === "informational_row") {
@@ -307,14 +319,14 @@ export async function runSync(config: AppConfig, cli: CliOptions, dependencies: 
       if (error instanceof TransactionValidationError) {
         throw error.withTransactionContext(
           transactionIndex,
-          lookup.rawTransactions.length,
-          buildValidationStructureContext(transactionIndex, lookup.rawTransactions, lookup.rowDiagnostics?.transactionStructures),
+          inputs.length,
+          buildValidationStructureContext(input.index, lookup.rawTransactions, lookup.rowDiagnostics?.transactionStructures),
         );
       }
       throw error;
     }
   }
-  if (normalized.length + skippedInformationalRowCount !== lookup.rawTransactions.length) {
+  if (normalized.length + skippedInformationalRowCount !== inputs.length) {
     throw new SyncError("SHEET_DATA_INVALID", "파싱 건수와 정규화 건수가 일치하지 않습니다");
   }
   const fingerprinted = normalized.map(fingerprintTransaction);
@@ -338,7 +350,7 @@ export async function runSync(config: AppConfig, cli: CliOptions, dependencies: 
   const base: SyncSummary = {
     status: dryRun ? "dry_run" : "success",
     lookupStartDate: range.startDate, lookupEndDate: range.endDate, minimumAllowedDate: range.minimumAllowedDate,
-    existingRowCount: state.rowCount, parsedRowCount: lookup.rawTransactions.length,
+    existingRowCount: state.rowCount, parsedRowCount: inputs.length,
     skippedInformationalRowCount, scrapedCount: normalized.length,
     fingerprintedCount: fingerprinted.length, uniqueScrapedCount: deduplicated.transactions.length,
     internalDuplicateCount: deduplicated.internalDuplicateCount,
@@ -346,6 +358,7 @@ export async function runSync(config: AppConfig, cli: CliOptions, dependencies: 
     insertedCount: 0, appendCalled: false, sheetsWriteEnabled: config.ENABLE_SHEETS_WRITE,
     durationMs: 0, retryCount: 0, duplicateSourceKeyCount: state.duplicateSourceKeys.length,
     invalidDateRowCount: state.invalidDateRowCount, missingSourceKeyRowCount: state.missingSourceKeyRowCount,
+    verifiedLegacyRowCount: state.verifiedLegacyRowCount,
     googleApiCalls: callCounts(dependencies.sheets),
   };
   if (normalized.length === 0) {
@@ -357,21 +370,36 @@ export async function runSync(config: AppConfig, cli: CliOptions, dependencies: 
   }
   if (!config.ENABLE_SHEETS_WRITE) throw new SyncError("SHEETS_WRITE_DISABLED", "신규 거래가 있지만 Sheets 쓰기가 비활성화되어 있습니다");
 
-  const resultContainerDetected = lookup.submitDiagnostics?.resultContainerDetected === true;
-  const transactionTableDetected = lookup.rowDiagnostics !== null;
+  const resultContainerDetected = partitions.every(({ result }) => result.status === "empty" || result.submitDiagnostics?.resultContainerDetected === true);
+  const transactionTableDetected = partitions.every(({ result }) => result.status === "empty" || result.rowDiagnostics !== null);
   const guard: SheetsWriteGuard = {
     dryRun, sheetsWriteEnabled: config.ENABLE_SHEETS_WRITE, lookupStatus: "success",
     resultContainerDetected, transactionTableDetected,
-    pageStructureValidated: lookup.status === "success" && lookup.paginationDetected === false && transactionTableDetected,
+    pageStructureValidated: partitions.every(({ result }) => result.status === "empty" ||
+      (result.status === "success" && result.paginationDetected === false)) && transactionTableDetected,
     allTransactionsValidated: true,
-    parsedTransactionCount: lookup.rawTransactions.length,
+    parsedTransactionCount: inputs.length,
     skippedInformationalRowCount,
     normalizedTransactionCount: normalized.length,
     newTransactionCount: fresh.transactions.length,
     sheetHeadersValidated: true,
     missingSourceKeyRowCount: state.missingSourceKeyRowCount,
+    verifiedLegacyRowCount: state.verifiedLegacyRowCount,
   };
   assertSheetsWriteAllowed(guard);
+  if (state.verifiedLegacyRowCount > 0) {
+    const currentRows = await dependencies.sheets.readDataRows();
+    const currentMetadata = info.sheetId === null ? [] : await dependencies.sheets.readSheetDeveloperMetadata(
+      VERIFIED_LEGACY_METADATA_KEY, info.sheetId,
+    );
+    const currentState = buildExistingSheetState(currentRows, accountId, currentMetadata.map((entry) => entry.value));
+    if (sheetIdentitySnapshot(currentRows) !== sheetIdentitySnapshot(rows) ||
+      currentState.verifiedLegacyRowCount !== state.verifiedLegacyRowCount ||
+      JSON.stringify(currentMetadata.map((entry) => entry.value).sort()) !== JSON.stringify(legacyMetadata.map((entry) => entry.value).sort()) ||
+      !headersAreExact(await dependencies.sheets.readHeader())) {
+      throw new SyncError("SHEET_DATA_INVALID", "KB 조회 중 시트 또는 검증된 legacy index가 변경돼 append를 차단합니다");
+    }
+  }
   const append = await appendWithRecovery(dependencies.sheets, fresh.transactions, guard, accountId);
   return {
     ...base, status: "success", insertedCount: append.appendedRowCount, appendCalled: true,
